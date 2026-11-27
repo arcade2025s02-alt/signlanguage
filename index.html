@@ -1,0 +1,2357 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SignBridge AI — Bidirectional Sign Language Translator</title>
+
+  <!-- Google Fonts: Inter & Noto Sans Devanagari for crisp English + Hindi UI -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'Noto Sans Devanagari', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+            }
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- MediaPipe Hands & Camera Utils (loaded via jsDelivr CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    /* Base styling & scrollbar */
+    html, body {
+      font-family: 'Inter', 'Noto Sans Devanagari', system-ui, sans-serif;
+      background-color: #0b1120;
+      color: #f1f5f9;
+      overflow-x: hidden;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+
+    /* Animated Hand Avatar Motion Keyframes */
+    @keyframes hand-wave {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(-14deg); }
+      75% { transform: rotate(14deg); }
+    }
+    @keyframes hand-pulse {
+      0%, 100% { transform: scale(1); filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.45)); }
+      50% { transform: scale(1.07); filter: drop-shadow(0 0 20px rgba(239, 68, 68, 0.85)); }
+    }
+    @keyframes hand-nod {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-10px); }
+    }
+    @keyframes hand-shake {
+      0%, 100% { transform: translateX(0px); }
+      25% { transform: translateX(-9px); }
+      75% { transform: translateX(9px); }
+    }
+    @keyframes hand-circle {
+      0% { transform: translate(0px, 0px); }
+      25% { transform: translate(7px, -5px); }
+      50% { transform: translate(0px, -10px); }
+      75% { transform: translate(-7px, -5px); }
+      100% { transform: translate(0px, 0px); }
+    }
+    @keyframes hand-beckon {
+      0%, 100% { transform: rotate(0deg) translateY(0); }
+      50% { transform: rotate(-10deg) translateY(6px); }
+    }
+    @keyframes sos-flash {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+      50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+    }
+    @keyframes mic-ring {
+      0% { transform: scale(0.95); opacity: 0.9; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
+
+    .anim-wave { animation: hand-wave 1.1s ease-in-out infinite; transform-origin: 50% 85%; }
+    .anim-pulse { animation: hand-pulse 1.1s ease-in-out infinite; transform-origin: 50% 50%; }
+    .anim-nod { animation: hand-nod 1s ease-in-out infinite; }
+    .anim-shake { animation: hand-shake 0.9s ease-in-out infinite; }
+    .anim-circle { animation: hand-circle 1.6s linear infinite; }
+    .anim-beckon { animation: hand-beckon 1s ease-in-out infinite; transform-origin: 50% 80%; }
+    .anim-static { transition: transform 0.3s ease; }
+
+    .sos-pulse { animation: sos-flash 1.4s infinite; }
+
+    /* Mirror video & overlay canvas cleanly */
+    .mirror-view {
+      transform: scaleX(-1);
+    }
+
+    /* Smooth tab fade */
+    .tab-panel {
+      animation: fadeIn 0.22s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased selection:bg-indigo-500/40">
+
+  <!-- Global Emergency Alert Banner (Hidden by default) -->
+  <div id="emergencyBanner" class="hidden fixed top-0 inset-x-0 z-50 bg-red-600 text-white px-4 py-3 shadow-2xl border-b border-red-400">
+    <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 font-bold text-lg animate-pulse">!</span>
+        <div>
+          <p class="text-xs uppercase tracking-wider font-semibold text-red-100" data-i18n="sosActive">EMERGENCY ALERT BROADCAST</p>
+          <p id="emergencyBannerText" class="text-base sm:text-lg font-extrabold leading-tight">I need help!</p>
+        </div>
+      </div>
+      <button onclick="dismissEmergencyBanner()" class="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-sm font-semibold transition">
+        ✕
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-xs sm:max-w-sm pointer-events-none"></div>
+
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-40 backdrop-blur-xl bg-slate-900/85 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+      <!-- Brand Logo & Title -->
+      <div class="flex items-center gap-3">
+        <div class="h-10 w-10 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/25">
+          <!-- Custom Hand Bridge SVG Icon -->
+          <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M7 11.5V6a1.5 1.5 0 013 0v4.5m0-4.5V4.5a1.5 1.5 0 013 0V10m0-4a1.5 1.5 0 013 0v5.5m0-3a1.5 1.5 0 013 0v4.5a6.5 6.5 0 01-6.5 6.5h-1.5a6 6 0 01-5.2-3l-2.1-3.6a1.5 1.5 0 012.5-1.6L7 13" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-lg sm:text-xl font-extrabold tracking-tight bg-gradient-to-r from-white to-indigo-200 bg-clip-text text-transparent">
+              SignBridge AI
+            </h1>
+            <span class="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              30+ Signs
+            </span>
+          </div>
+          <p class="text-xs text-slate-400" data-i18n="appSubtitle">Bidirectional Sign Language Translator</p>
+        </div>
+      </div>
+
+      <!-- Global Controls: Language Selector & Voice Toggle -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Language Toggle -->
+        <div class="flex items-center bg-slate-800/90 p-1 rounded-xl border border-slate-700/80">
+          <button id="langEnBtn" onclick="setLanguage('en')" class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white shadow">
+            EN
+          </button>
+          <button id="langHiBtn" onclick="setLanguage('hi')" class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition text-slate-300 hover:text-white">
+            हिंदी
+          </button>
+        </div>
+
+        <!-- Global Voice Output (TTS) Toggle -->
+        <button id="voiceToggleBtn" onclick="toggleVoiceOutput()" class="flex items-center gap-2 px-3 py-2 rounded-xl border transition font-semibold text-xs sm:text-sm bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25">
+          <span id="voiceIcon">🔊</span>
+          <span data-i18n="voiceLabel">Voice</span>
+          <span id="voiceStateBadge" class="px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-emerald-500 text-slate-950">ON</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main 3-Tab Navigation Bar -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 pb-3">
+      <nav class="grid grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-2xl border border-slate-800" role="tablist">
+        <button id="tabBtnCamera" onclick="switchTab('camera')" role="tab" aria-selected="true"
+          class="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition bg-indigo-600 text-white shadow-lg shadow-indigo-600/25">
+          <span>📷</span>
+          <span class="truncate" data-i18n="tabCamera">Sign → Text & Voice</span>
+        </button>
+        <button id="tabBtnReverse" onclick="switchTab('reverse')" role="tab" aria-selected="false"
+          class="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition text-slate-400 hover:text-white hover:bg-slate-800/80">
+          <span>🎙️</span>
+          <span class="truncate" data-i18n="tabReverse">Text / Voice → Sign</span>
+        </button>
+        <button id="tabBtnDict" onclick="switchTab('dictionary')" role="tab" aria-selected="false"
+          class="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition text-slate-400 hover:text-white hover:bg-slate-800/80">
+          <span>📖</span>
+          <span class="truncate" data-i18n="tabDict">30-Sign Guide</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-6">
+
+    <!-- ========================================================= -->
+    <!-- TAB 1: SIGN -> TEXT & VOICE (LIVE CAMERA + HAND TRACKING) -->
+    <!-- ========================================================= -->
+    <section id="panelCamera" class="tab-panel space-y-5">
+
+      <!-- Quick Emergency SOS Strip -->
+      <div class="rounded-2xl bg-gradient-to-r from-red-950/70 via-slate-900 to-red-950/60 border border-red-500/30 p-3.5 sm:p-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div class="flex items-center gap-2.5">
+            <span class="h-2.5 w-2.5 rounded-full bg-red-500 sos-pulse"></span>
+            <span class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-red-300" data-i18n="sosStripTitle">
+              Emergency Quick-SOS (1-Tap Voice Alert)
+            </span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="triggerEmergencySOS('I need help!', 'मुझे मदद चाहिए!')" class="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 active:scale-95 text-white text-xs sm:text-sm font-bold shadow-md shadow-red-600/30 transition">
+              🆘 <span data-i18n="sosHelp">I need help</span>
+            </button>
+            <button onclick="triggerEmergencySOS('I need water please.', 'मुझे कृपया पानी चाहिए।')" class="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 active:scale-95 text-white text-xs sm:text-sm font-bold shadow-md shadow-sky-600/30 transition">
+              💧 <span data-i18n="sosWater">I need water</span>
+            </button>
+            <button onclick="triggerEmergencySOS('Emergency! Please call an ambulance immediately.', 'आपातकाल! कृपया तुरंत एम्बुलेंस बुलाएँ।')" class="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 active:scale-95 text-white text-xs sm:text-sm font-bold shadow-md shadow-amber-600/30 transition">
+              🚑 <span data-i18n="sosAmbulance">Call Ambulance</span>
+            </button>
+            <button onclick="triggerEmergencySOS('I am in severe pain. I need a doctor.', 'मुझे बहुत दर्द हो रहा है। मुझे डॉक्टर चाहिए।')" class="px-3 py-2 rounded-xl bg-rose-700 hover:bg-rose-600 active:scale-95 text-white text-xs sm:text-sm font-bold shadow-md shadow-rose-700/30 transition">
+              🏥 <span data-i18n="sosPain">I am in pain</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main 2-Column Camera & Output Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+        <!-- Left Column (7 cols): Live Webcam + Hand Landmarks Overlay -->
+        <div class="lg:col-span-7 space-y-4">
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden shadow-2xl">
+            <!-- Camera Top Bar -->
+            <div class="px-4 py-3 bg-slate-900/95 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2.5">
+                <span id="camStatusDot" class="h-2.5 w-2.5 rounded-full bg-slate-500"></span>
+                <span id="camStatusText" class="text-xs sm:text-sm font-semibold text-slate-300" data-i18n="camReady">Camera Idle — Click Start</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button id="startCamBtn" onclick="startCamera()" class="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-bold transition shadow-md shadow-indigo-600/25">
+                  ▶ <span data-i18n="startCam">Start Camera</span>
+                </button>
+                <button id="stopCamBtn" onclick="stopCamera()" class="hidden px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-bold border border-slate-700 transition">
+                  ⏹ <span data-i18n="stopCam">Stop</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Video & Canvas Stage -->
+            <div class="relative aspect-video bg-slate-950 flex items-center justify-center overflow-hidden">
+              <video id="webcamVideo" class="hidden w-full h-full object-cover mirror-view" playsinline muted></video>
+              <canvas id="handCanvas" class="w-full h-full object-cover mirror-view"></canvas>
+
+              <!-- Placeholder / Fallback Overlay when Camera is Off or Denied -->
+              <div id="cameraOverlay" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/85">
+                <div class="h-16 w-16 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-3xl mb-3">
+                  ✋
+                </div>
+                <h3 id="overlayTitle" class="text-base sm:text-lg font-bold text-white mb-1" data-i18n="camOverlayTitle">
+                  Real-Time AI Hand Sign Recognition
+                </h3>
+                <p id="overlayDesc" class="text-xs sm:text-sm text-slate-400 max-w-md mb-4" data-i18n="camOverlayDesc">
+                  Start your webcam to detect 30+ emergency & daily hand signs in real time. No camera? Use the Simulate Sign bar below!
+                </p>
+                <button onclick="startCamera()" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-lg shadow-indigo-600/30 transition">
+                  📷 <span data-i18n="enableCamBtn">Enable Camera & Start Tracking</span>
+                </button>
+              </div>
+
+              <!-- Live Detection HUD Pill (Top Left inside Canvas) -->
+              <div id="liveHud" class="hidden absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none">
+                <div class="bg-slate-950/80 backdrop-blur-md border border-slate-700/80 rounded-xl px-3.5 py-2 shadow-xl max-w-[75%]">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] uppercase tracking-wider font-bold text-indigo-400" data-i18n="liveDetect">DETECTED</span>
+                    <span id="hudConfidence" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">0%</span>
+                  </div>
+                  <p id="hudSignEn" class="text-sm sm:text-base font-extrabold text-white truncate">—</p>
+                  <p id="hudSignHi" class="text-xs text-indigo-200 truncate">—</p>
+                </div>
+                <div class="bg-slate-950/80 backdrop-blur-md border border-slate-700/80 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold text-slate-300">
+                  <span id="hudHandCount">0</span> ✋
+                </div>
+              </div>
+
+              <!-- Stability / Hold Progress Bar (Bottom inside Canvas) -->
+              <div class="absolute bottom-0 inset-x-0 bg-slate-950/75 backdrop-blur-sm px-4 py-2 border-t border-slate-800/70">
+                <div class="flex items-center justify-between text-[11px] font-semibold mb-1">
+                  <span class="text-slate-300" data-i18n="holdProgressLabel">Hold sign steady to lock in (0.7s)</span>
+                  <span id="holdPercentText" class="text-indigo-300 font-bold">0%</span>
+                </div>
+                <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                  <div id="holdProgressBar" class="h-full w-0 bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 transition-all duration-75 rounded-full"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive "Simulate Sign" Quick-Test Bar (Fallback & Demo Mode) -->
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                  <span>🧪</span>
+                  <span data-i18n="simTitle">Simulate Sign (Quick Test — No Camera Needed)</span>
+                </h3>
+                <p class="text-xs text-slate-400" data-i18n="simDesc">Click any sign below to simulate live recognition, sentence building, and voice output.</p>
+              </div>
+            </div>
+            <div id="simulateSignBar" class="flex flex-wrap gap-2 max-h-32 overflow-y-auto pr-1">
+              <!-- Populated dynamically by JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column (5 cols): Live Result Card & Sentence Builder -->
+        <div class="lg:col-span-5 flex flex-col gap-4">
+
+          <!-- Currently Detected Sign Card -->
+          <div class="rounded-2xl bg-gradient-to-br from-slate-900 to-indigo-950/40 border border-slate-800 p-5 shadow-xl">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-xs font-bold uppercase tracking-wider text-indigo-400" data-i18n="currentSignTitle">Current Recognized Sign</span>
+              <span id="signCategoryBadge" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-400">Ready</span>
+            </div>
+
+            <div class="flex items-center gap-4">
+              <!-- Mini SVG Preview of Detected Sign -->
+              <div id="detectedSvgBox" class="h-20 w-20 shrink-0 rounded-2xl bg-slate-950/90 border border-slate-800 flex items-center justify-center p-2">
+                <span class="text-3xl opacity-40">🤟</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <h2 id="mainDetectedEn" class="text-xl sm:text-2xl font-extrabold text-white truncate" data-i18n="waitingSign">Waiting for sign...</h2>
+                <p id="mainDetectedHi" class="text-sm sm:text-base font-medium text-indigo-300 truncate mt-0.5">संकेत की प्रतीक्षा है...</p>
+                <div class="mt-2.5 flex items-center gap-2">
+                  <div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div id="confidenceBar" class="h-full w-0 bg-emerald-400 rounded-full transition-all duration-150"></div>
+                  </div>
+                  <span id="confidenceText" class="text-xs font-bold text-slate-400">0%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sentence Builder & Voice Output Panel -->
+          <div class="flex-1 rounded-2xl bg-slate-900 border border-slate-800 p-5 flex flex-col justify-between gap-4 shadow-xl">
+            <div class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                  <span>💬</span>
+                  <span data-i18n="sentenceBuilderTitle">Live Sentence Transcript</span>
+                </h3>
+                <span id="wordCountBadge" class="text-xs font-semibold text-slate-400">0 signs</span>
+              </div>
+
+              <!-- Transcript Chips Box -->
+              <div id="transcriptBox" class="min-h-[130px] max-h-56 overflow-y-auto rounded-xl bg-slate-950 border border-slate-800 p-3.5 flex flex-wrap content-start gap-2">
+                <p id="emptyTranscriptMsg" class="text-xs sm:text-sm text-slate-500 italic" data-i18n="emptyTranscript">
+                  Confirmed signs will appear here to form a full sentence...
+                </p>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="space-y-2.5">
+              <button onclick="speakFullSentence()" class="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 active:scale-[0.99] text-white font-bold text-sm shadow-lg shadow-indigo-600/25 transition flex items-center justify-center gap-2">
+                <span>🔊</span>
+                <span data-i18n="speakSentenceBtn">Speak Full Sentence</span>
+              </button>
+
+              <div class="grid grid-cols-3 gap-2">
+                <button onclick="undoLastSign()" class="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition">
+                  ↩ <span data-i18n="undoBtn">Undo</span>
+                </button>
+                <button onclick="copyTranscript()" class="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition">
+                  📋 <span data-i18n="copyBtn">Copy</span>
+                </button>
+                <button onclick="clearTranscript()" class="py-2.5 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 text-rose-300 text-xs font-bold border border-rose-800/60 transition">
+                  🗑 <span data-i18n="clearBtn">Clear</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- TAB 2: TEXT & VOICE -> SIGN LANGUAGE (BIDIRECTIONAL)      -->
+    <!-- ========================================================= -->
+    <section id="panelReverse" class="hidden tab-panel space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+        <!-- Left Column (5 cols): Speech & Text Input Panel -->
+        <div class="lg:col-span-5 space-y-4">
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-5 space-y-4 shadow-xl">
+            <div class="flex items-center justify-between">
+              <h2 class="text-base font-extrabold text-white flex items-center gap-2">
+                <span>🎙️</span>
+                <span data-i18n="reverseInputTitle">Speak or Type to Translate</span>
+              </h2>
+              <span id="speechLangTag" class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                en-US
+              </span>
+            </div>
+
+            <!-- Textarea -->
+            <div class="relative">
+              <textarea id="reverseInput" rows="4"
+                class="w-full rounded-xl bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 outline-none p-3.5 text-sm sm:text-base text-white placeholder-slate-500 resize-none transition"
+                placeholder="Type in English or Hindi (e.g., 'Hello I need water please' or 'मुझे मदद चाहिए')..."></textarea>
+            </div>
+
+            <!-- Voice Mic & Translate Buttons -->
+            <div class="flex items-center gap-2.5">
+              <button id="micBtn" onclick="toggleSpeechRecognition()" class="relative flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold text-sm transition flex items-center justify-center gap-2">
+                <span id="micIcon">🎤</span>
+                <span id="micBtnText" data-i18n="startMicBtn">Speak (Mic)</span>
+              </button>
+              <button onclick="translateTextToSign()" class="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/25 transition flex items-center justify-center gap-2">
+                <span>🤟</span>
+                <span data-i18n="translateBtn">Convert to Sign</span>
+              </button>
+            </div>
+
+            <!-- Mic Status Notice -->
+            <p id="micStatusNote" class="text-xs text-slate-400">
+              Tip: Unknown words automatically use A–Z ASL fingerspelling.
+            </p>
+
+            <!-- Quick Example Prompts -->
+            <div class="pt-2 border-t border-slate-800 space-y-2">
+              <p class="text-xs font-bold uppercase tracking-wider text-slate-400" data-i18n="quickExamples">Quick Examples</p>
+              <div class="flex flex-wrap gap-2">
+                <button onclick="useSamplePhrase('Hello I need water please')" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 border border-slate-700 text-xs font-medium text-slate-200 transition">
+                  Hello, I need water please
+                </button>
+                <button onclick="useSamplePhrase('Emergency I need help doctor')" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-red-600/30 border border-slate-700 text-xs font-medium text-slate-200 transition">
+                  Emergency! I need help, doctor
+                </button>
+                <button onclick="useSamplePhrase('मुझे पानी चाहिए धन्यवाद')" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 border border-slate-700 text-xs font-medium text-slate-200 transition">
+                  मुझे पानी चाहिए धन्यवाद
+                </button>
+                <button onclick="useSamplePhrase('Thank you friend I love you')" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 border border-slate-700 text-xs font-medium text-slate-200 transition">
+                  Thank you friend, I love you
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column (7 cols): Animated Sign Avatar Stage & Timeline -->
+        <div class="lg:col-span-7 space-y-4">
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-xl space-y-4">
+            <!-- Stage Header -->
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="h-2.5 w-2.5 rounded-full bg-cyan-400"></span>
+                <h3 class="text-sm font-bold text-white" data-i18n="stageTitle">Animated Sign Visualizer</h3>
+              </div>
+              <div class="flex items-center gap-2">
+                <span id="stageModeBadge" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  Ready
+                </span>
+                <span id="stageStepCounter" class="text-xs font-bold text-slate-400">0 / 0</span>
+              </div>
+            </div>
+
+            <!-- Main Avatar Display Stage -->
+            <div class="relative rounded-2xl bg-gradient-to-b from-slate-950 via-slate-950 to-indigo-950/40 border border-slate-800 min-h-[290px] flex flex-col items-center justify-center p-6 text-center overflow-hidden">
+              <!-- Decorative Subtle Grid -->
+              <div class="absolute inset-0 opacity-10 pointer-events-none" style="background-image: radial-gradient(#6366f1 1px, transparent 1px); background-size: 20px 20px;"></div>
+
+              <!-- Dynamic SVG Hand Container -->
+              <div id="avatarStageSvg" class="relative z-10 w-44 h-44 sm:w-52 sm:h-52 flex items-center justify-center">
+                <!-- Default Hand SVG rendered on load -->
+              </div>
+
+              <!-- Active Word / Letter Caption -->
+              <div class="relative z-10 mt-3 space-y-1">
+                <h2 id="avatarMainLabel" class="text-xl sm:text-2xl font-extrabold text-white">Ready to Sign</h2>
+                <p id="avatarSubLabel" class="text-sm font-medium text-indigo-300">Type or speak a sentence to start</p>
+                <p id="avatarPoseTip" class="text-xs text-slate-400 max-w-md mx-auto pt-1"></p>
+              </div>
+            </div>
+
+            <!-- Playback Controls Bar -->
+            <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl p-3">
+              <div class="flex items-center gap-1.5">
+                <button onclick="stepReverse(-1)" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition" title="Previous">
+                  ⏮
+                </button>
+                <button id="playPauseBtn" onclick="toggleReversePlay()" class="px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow">
+                  ▶ <span data-i18n="playBtn">Play</span>
+                </button>
+                <button onclick="stepReverse(1)" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition" title="Next">
+                  ⏭
+                </button>
+                <button id="loopBtn" onclick="toggleReverseLoop()" class="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold border border-slate-700 transition">
+                  🔁 <span data-i18n="loopBtn">Loop</span>
+                </button>
+              </div>
+
+              <!-- Speed Slider -->
+              <div class="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                <span data-i18n="speedLabel">Speed:</span>
+                <input id="speedSlider" type="range" min="0.5" max="2.0" step="0.25" value="1.0" oninput="updatePlaybackSpeed(this.value)"
+                  class="w-24 accent-indigo-500 cursor-pointer" />
+                <span id="speedValue" class="w-9 text-indigo-300 font-bold">1.0x</span>
+              </div>
+            </div>
+
+            <!-- Token Sequence Timeline -->
+            <div class="space-y-2">
+              <p class="text-xs font-bold uppercase tracking-wider text-slate-400" data-i18n="timelineTitle">Sign Sequence Timeline</p>
+              <div id="signTimeline" class="flex flex-wrap gap-2 p-3 rounded-xl bg-slate-950 border border-slate-800 min-h-[56px]">
+                <span class="text-xs text-slate-500 italic" data-i18n="emptyTimeline">Sequence tokens will appear here...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- TAB 3: 30-SIGN VISUAL DICTIONARY & PRACTICE GUIDE         -->
+    <!-- ========================================================= -->
+    <section id="panelDictionary" class="hidden tab-panel space-y-5">
+      <!-- Search & Filter Bar -->
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <div class="relative flex-1">
+          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
+          <input id="dictSearch" type="text" oninput="renderDictionary()"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-indigo-500 outline-none text-sm text-white placeholder-slate-500"
+            placeholder="Search 30 signs in English or Hindi (e.g., water, पानी, help, doctor)..." />
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="setDictFilter('all')" data-filter="all" class="dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-indigo-600 text-white">
+            <span data-i18n="filterAll">All (30)</span>
+          </button>
+          <button onclick="setDictFilter('emergency')" data-filter="emergency" class="dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-800 text-slate-300 hover:bg-slate-700">
+            🚨 <span data-i18n="filterEmergency">Emergency</span>
+          </button>
+          <button onclick="setDictFilter('daily')" data-filter="daily" class="dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-800 text-slate-300 hover:bg-slate-700">
+            ☀️ <span data-i18n="filterDaily">Daily</span>
+          </button>
+          <button onclick="setDictFilter('response')" data-filter="response" class="dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-800 text-slate-300 hover:bg-slate-700">
+            💬 <span data-i18n="filterResponse">Responses</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Dictionary Cards Grid -->
+      <div id="dictionaryGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Populated dynamically by JS -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Subtle Footer -->
+  <footer class="max-w-7xl mx-auto px-4 sm:px-6 py-6 mt-4 border-t border-slate-900 text-center text-xs text-slate-500">
+    SignBridge AI • On-Device MediaPipe Hand Tracking + Web Speech API • Privacy-First (No video leaves your browser)
+  </footer>
+
+  <!-- ========================================================= -->
+  <!-- APPLICATION JAVASCRIPT                                    -->
+  <!-- ========================================================= -->
+  <script>
+    /*************************************************************************
+     * 1. INTERNATIONALIZATION (ENGLISH + HINDI UI STRINGS)
+     *************************************************************************/
+    const I18N = {
+      en: {
+        appSubtitle: 'Bidirectional Sign Language Translator',
+        voiceLabel: 'Voice',
+        tabCamera: 'Sign → Text & Voice',
+        tabReverse: 'Text / Voice → Sign',
+        tabDict: '30-Sign Guide',
+        sosActive: 'EMERGENCY ALERT BROADCAST',
+        sosStripTitle: 'Emergency Quick-SOS (1-Tap Voice Alert)',
+        sosHelp: 'I need help',
+        sosWater: 'I need water',
+        sosAmbulance: 'Call Ambulance',
+        sosPain: 'I am in pain',
+        camReady: 'Camera Idle — Click Start',
+        startCam: 'Start Camera',
+        stopCam: 'Stop',
+        camOverlayTitle: 'Real-Time AI Hand Sign Recognition',
+        camOverlayDesc: 'Start your webcam to detect 30+ emergency & daily hand signs in real time. No camera? Use the Simulate Sign bar below!',
+        enableCamBtn: 'Enable Camera & Start Tracking',
+        liveDetect: 'DETECTED',
+        holdProgressLabel: 'Hold sign steady to lock in (0.7s)',
+        simTitle: 'Simulate Sign (Quick Test — No Camera Needed)',
+        simDesc: 'Click any sign below to simulate live recognition, sentence building, and voice output.',
+        currentSignTitle: 'Current Recognized Sign',
+        waitingSign: 'Waiting for sign...',
+        sentenceBuilderTitle: 'Live Sentence Transcript',
+        emptyTranscript: 'Confirmed signs will appear here to form a full sentence...',
+        speakSentenceBtn: 'Speak Full Sentence',
+        undoBtn: 'Undo',
+        copyBtn: 'Copy',
+        clearBtn: 'Clear',
+        reverseInputTitle: 'Speak or Type to Translate',
+        startMicBtn: 'Speak (Mic)',
+        stopMicBtn: 'Listening...',
+        translateBtn: 'Convert to Sign',
+        quickExamples: 'Quick Examples',
+        stageTitle: 'Animated Sign Visualizer',
+        playBtn: 'Play',
+        pauseBtn: 'Pause',
+        loopBtn: 'Loop',
+        speedLabel: 'Speed:',
+        timelineTitle: 'Sign Sequence Timeline',
+        emptyTimeline: 'Sequence tokens will appear here...',
+        filterAll: 'All (30)',
+        filterEmergency: 'Emergency',
+        filterDaily: 'Daily',
+        filterResponse: 'Responses',
+      },
+      hi: {
+        appSubtitle: 'बाय-डायरेक्शनल साइन लैंग्वेज ट्रांसलेटर',
+        voiceLabel: 'आवाज़',
+        tabCamera: 'साइन → टेक्स्ट और आवाज़',
+        tabReverse: 'बोलें / लिखें → साइन',
+        tabDict: '30-साइन गाइड',
+        sosActive: 'आपातकालीन अलर्ट प्रसारण',
+        sosStripTitle: 'इमरजेंसी क्विक-SOS (1-टैप वॉइस अलर्ट)',
+        sosHelp: 'मुझे मदद चाहिए',
+        sosWater: 'मुझे पानी चाहिए',
+        sosAmbulance: 'एम्बुलेंस बुलाएँ',
+        sosPain: 'मुझे दर्द हो रहा है',
+        camReady: 'कैमरा बंद है — स्टार्ट पर क्लिक करें',
+        startCam: 'कैमरा शुरू करें',
+        stopCam: 'रोकें',
+        camOverlayTitle: 'रियल-टाइम AI हैंड साइन पहचान',
+        camOverlayDesc: '30+ इमरजेंसी और दैनिक साइन पहचानने के लिए वेबकैम चालू करें। कैमरा न होने पर नीचे "सिमुलेट साइन" बार से टेस्ट करें!',
+        enableCamBtn: 'कैमरा चालू करें और ट्रैक करें',
+        liveDetect: 'पहचाना गया',
+        holdProgressLabel: 'कन्फर्म करने के लिए साइन 0.7 सेकंड स्थिर रखें',
+        simTitle: 'सिमुलेट साइन (बिना कैमरे के तुरंत टेस्ट करें)',
+        simDesc: 'किसी भी साइन पर क्लिक करके लाइव डिटेक्शन, वाक्य निर्माण और वॉइस आउटपुट टेस्ट करें।',
+        currentSignTitle: 'वर्तमान पहचाना गया साइन',
+        waitingSign: 'संकेत की प्रतीक्षा है...',
+        sentenceBuilderTitle: 'लाइव वाक्य ट्रांसक्रिप्ट',
+        emptyTranscript: 'कन्फर्म किए गए साइन यहाँ जुड़कर पूरा वाक्य बनाएंगे...',
+        speakSentenceBtn: 'पूरा वाक्य बोलकर सुनाएँ',
+        undoBtn: 'पूर्ववत',
+        copyBtn: 'कॉपी',
+        clearBtn: 'साफ़ करें',
+        reverseInputTitle: 'साइन में बदलने के लिए बोलें या लिखें',
+        startMicBtn: 'बोलें (माइक)',
+        stopMicBtn: 'सुन रहा है...',
+        translateBtn: 'साइन में बदलें',
+        quickExamples: 'त्वरित उदाहरण',
+        stageTitle: 'एनिमेटेड साइन विज़ुअलाइज़र',
+        playBtn: 'चलाएँ',
+        pauseBtn: 'रोकें',
+        loopBtn: 'लूप',
+        speedLabel: 'गति:',
+        timelineTitle: 'साइन अनुक्रम टाइमलाइन',
+        emptyTimeline: 'साइन के टोकन यहाँ दिखाई देंगे...',
+        filterAll: 'सभी (30)',
+        filterEmergency: 'आपातकालीन',
+        filterDaily: 'दैनिक',
+        filterResponse: 'उत्तर / भाव',
+      }
+    };
+
+    /*************************************************************************
+     * 2. COMPREHENSIVE 30-SIGN DICTIONARY DATABASE
+     * Each sign defines: English/Hindi phrases, category, keywords for reverse
+     * matching, camera pose instructions, motion type, and SVG finger pose.
+     *************************************************************************/
+    const SIGNS_DB = [
+      {
+        id: 'help',
+        en: 'I need help',
+        hi: 'मुझे मदद चाहिए',
+        category: 'emergency',
+        keywords: ['i need help', 'need help', 'help', 'help me', 'save me', 'sos', 'मदद', 'बचाओ', 'मुझे मदद चाहिए', 'सहायता'],
+        poseEn: 'Raise open palm HIGH in the upper part of the camera frame with fingers spread.',
+        poseHi: 'अपनी खुली हथेली को उंगलियां फैलाकर कैमरे के ऊपरी हिस्से में ऊँचा उठाएँ।',
+        motion: 'pulse',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: true, tilt: 0 }
+      },
+      {
+        id: 'water',
+        en: 'I need water',
+        hi: 'मुझे पानी चाहिए',
+        category: 'emergency',
+        keywords: ['i need water', 'need water', 'water', 'thirsty', 'पानी', 'मुझे पानी चाहिए', 'प्यास', 'जल'],
+        poseEn: 'W-Sign: Hold Index, Middle, and Ring fingers UP; tuck Thumb and Pinky.',
+        poseHi: 'W-साइन: तर्जनी, मध्यमा और अनामिका (3 उंगलियां) ऊपर रखें; अंगूठा और छोटी उंगली मोड़ें।',
+        motion: 'nod',
+        pose: { thumb: 'curled', index: 'up', middle: 'up', ring: 'up', pinky: 'curled', spread: true, tilt: 0 }
+      },
+      {
+        id: 'emergency',
+        en: 'Emergency / Call 911',
+        hi: 'आपातकाल / 911 कॉल करें',
+        category: 'emergency',
+        keywords: ['emergency', 'call 911', '911', 'ambulance', 'police', 'urgent', 'आपातकाल', 'इमरजेंसी', 'एम्बुलेंस', 'पुलिस'],
+        poseEn: 'Shaka / Phone Sign upright: Extend Thumb and Pinky; curl middle 3 fingers.',
+        poseHi: 'फोन साइन (सीधा): अंगूठा और छोटी उंगली फैलाएँ, बीच की 3 उंगलियां बंद रखें।',
+        motion: 'pulse',
+        pose: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: true, tilt: -15 }
+      },
+      {
+        id: 'yes',
+        en: 'Yes / OK',
+        hi: 'हाँ / ठीक है',
+        category: 'response',
+        keywords: ['yes', 'yeah', 'yep', 'ok', 'okay', 'agree', 'sure', 'हाँ', 'हा', 'जी', 'ठीक'],
+        poseEn: 'Thumbs Up: Make a fist with only your Thumb pointing straight UP.',
+        poseHi: 'थम्स अप: मुट्ठी बंद करें और केवल अंगूठा ऊपर की ओर रखें।',
+        motion: 'nod',
+        pose: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'no',
+        en: 'No / Bad',
+        hi: 'नहीं / खराब',
+        category: 'response',
+        keywords: ['no', 'nope', 'bad', 'never', 'wrong', 'dont', 'नहीं', 'ना', 'गलत', 'खराब'],
+        poseEn: 'Thumbs Down: Make a fist with your Thumb pointing straight DOWN.',
+        poseHi: 'थम्स डाउन: मुट्ठी बंद करें और अंगूठा नीचे की ओर रखें।',
+        motion: 'shake',
+        pose: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 180 }
+      },
+      {
+        id: 'stop',
+        en: 'Stop',
+        hi: 'रुकिए / बंद करें',
+        category: 'emergency',
+        keywords: ['stop', 'halt', 'freeze', 'enough', 'रुको', 'रुकिए', 'बंद'],
+        poseEn: 'Flat Palm: Hold all 5 fingers UP and pressed tightly together.',
+        poseHi: 'सीधी हथेली: सभी 5 उंगलियां सीधी ऊपर रखें और आपस में सटाकर रखें।',
+        motion: 'static',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: false, tilt: 0 }
+      },
+      {
+        id: 'hello',
+        en: 'Hello / Hi',
+        hi: 'नमस्ते / हेलो',
+        category: 'daily',
+        keywords: ['hello', 'hi', 'hey', 'greetings', 'namaste', 'नमस्ते', 'नमस्कार', 'हेलो', 'हाय'],
+        poseEn: 'Open Wave: Hold all 5 fingers UP and spread wide at chest level.',
+        poseHi: 'खुली हथेली: छाती के स्तर पर सभी 5 उंगलियां चौड़ी फैलाकर रखें।',
+        motion: 'wave',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: true, tilt: 0 }
+      },
+      {
+        id: 'thank_you',
+        en: 'Thank you',
+        hi: 'धन्यवाद / शुक्रिया',
+        category: 'daily',
+        keywords: ['thank you', 'thanks', 'thx', 'grateful', 'धन्यवाद', 'शुक्रिया', 'थैंक्यू'],
+        poseEn: 'Flat Open Hand tilted diagonally (~35°) with fingers together.',
+        poseHi: 'सभी उंगलियां मिलाकर खुली हथेली को थोड़ा तिरछा (~35°) रखें।',
+        motion: 'nod',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: false, tilt: 35 }
+      },
+      {
+        id: 'please',
+        en: 'Please',
+        hi: 'कृपया',
+        category: 'daily',
+        keywords: ['please', 'kindly', 'pls', 'कृपया', 'प्लीज'],
+        poseEn: 'Flat Open Hand held horizontally (sideways) across chest.',
+        poseHi: 'सभी 5 उंगलियां मिलाकर हथेली को आड़ा (हॉरिजॉन्टल) रखें।',
+        motion: 'circle',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: false, tilt: 85 }
+      },
+      {
+        id: 'love',
+        en: 'I love you',
+        hi: 'मैं तुमसे प्यार करता हूँ',
+        category: 'daily',
+        keywords: ['i love you', 'love you', 'love', 'प्यार', 'लव'],
+        poseEn: 'ASL ILY Sign: Extend Thumb, Index, and Pinky; curl Middle and Ring.',
+        poseHi: 'ILY साइन: अंगूठा, तर्जनी और छोटी उंगली ऊपर रखें; बीच की 2 उंगलियां बंद करें।',
+        motion: 'pulse',
+        pose: { thumb: 'up', index: 'up', middle: 'curled', ring: 'curled', pinky: 'up', spread: true, tilt: 0 }
+      },
+      {
+        id: 'peace',
+        en: 'Peace / Safe',
+        hi: 'शांति / सुरक्षित',
+        category: 'response',
+        keywords: ['peace', 'safe', 'victory', 'fine', 'alright', 'शांति', 'सुरक्षित', 'सेफ'],
+        poseEn: 'V-Sign: Hold Index and Middle fingers UP and spread apart.',
+        poseHi: 'V-साइन: तर्जनी और मध्यमा उंगली ऊपर उठाकर बीच में जगह (V आकार) रखें।',
+        motion: 'static',
+        pose: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 }
+      },
+      {
+        id: 'wait',
+        en: 'Wait / Hold on',
+        hi: 'रुकें / इंतज़ार करें',
+        category: 'response',
+        keywords: ['wait', 'hold on', 'moment', 'one second', 'इंतज़ार', 'ठहरो', 'वेट'],
+        poseEn: 'Point UP: Extend only your Index finger straight upward.',
+        poseHi: 'ऊपर इशारा: केवल अपनी तर्जनी उंगली (Index finger) सीधी ऊपर रखें।',
+        motion: 'static',
+        pose: { thumb: 'curled', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'food',
+        en: 'Food / Eat',
+        hi: 'खाना / भोजन',
+        category: 'daily',
+        keywords: ['food', 'eat', 'hungry', 'meal', 'lunch', 'dinner', 'खाना', 'भोजन', 'भूख'],
+        poseEn: 'O-Pinch: Pinch Thumb and Index/Middle fingertips together tilted forward.',
+        poseHi: 'O-पिंच: अंगूठे और उंगलियों के सिरों को मिलाकर चोंच जैसा आकार बनाएँ।',
+        motion: 'nod',
+        pose: { thumb: 'pinched', index: 'pinched', middle: 'pinched', ring: 'curled', pinky: 'curled', spread: false, tilt: -20 }
+      },
+      {
+        id: 'pain',
+        en: 'Pain / Hurt',
+        hi: 'दर्द / चोट',
+        category: 'emergency',
+        keywords: ['pain', 'hurt', 'ache', 'injured', 'bleeding', 'sick', 'दर्द', 'चोट', 'तकलीफ', 'बीमार'],
+        poseEn: 'Closed Fist: Curl all fingers tightly facing forward (thumb on side).',
+        poseHi: 'बंद मुट्ठी: सभी उंगलियों को कसकर बंद करके सामने दिखाएँ।',
+        motion: 'pulse',
+        pose: { thumb: 'curled', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'doctor',
+        en: 'Doctor / Medicine',
+        hi: 'डॉक्टर / दवाई',
+        category: 'emergency',
+        keywords: ['doctor', 'medicine', 'meds', 'nurse', 'clinic', 'डॉक्टर', 'दवाई', 'दवा', 'इलाज'],
+        poseEn: 'U-Sign: Hold Index and Middle fingers UP pressed tightly together.',
+        poseHi: 'U-साइन: तर्जनी और मध्यमा उंगली को आपस में सटाकर सीधा ऊपर रखें।',
+        motion: 'nod',
+        pose: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'bathroom',
+        en: 'Bathroom / Restroom',
+        hi: 'बाथरूम / शौचालय',
+        category: 'daily',
+        keywords: ['bathroom', 'restroom', 'toilet', 'washroom', 'बाथरूम', 'शौचालय', 'टॉयलेट'],
+        poseEn: 'T-Fist: Closed fist with Thumb tucked between Index and Middle fingers.',
+        poseHi: 'T-मुट्ठी: बंद मुट्ठी में अंगूठे को तर्जनी और मध्यमा के बीच रखें।',
+        motion: 'shake',
+        pose: { thumb: 'crossed', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'sorry',
+        en: 'Sorry',
+        hi: 'माफ़ कीजिए',
+        category: 'daily',
+        keywords: ['sorry', 'apologize', 'forgive', 'excuse me', 'माफ़', 'माफ', 'सॉरी', 'क्षमा'],
+        poseEn: 'Sideways Fist: Hold a closed fist tilted sideways (horizontal) over chest.',
+        poseHi: 'तिरछी मुट्ठी: बंद मुट्ठी को आड़ा (हॉरिजॉन्टल) करके दिखाएँ।',
+        motion: 'circle',
+        pose: { thumb: 'curled', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 85 }
+      },
+      {
+        id: 'good',
+        en: 'Good / Perfect',
+        hi: 'अच्छा / बढ़िया',
+        category: 'response',
+        keywords: ['good', 'perfect', 'great', 'nice', 'awesome', 'excellent', 'अच्छा', 'बढ़िया', 'उत्तम'],
+        poseEn: 'OK Pinch: Touch Thumb & Index tips into a circle; keep other 3 fingers UP.',
+        poseHi: 'OK साइन: अंगूठे और तर्जनी से गोला बनाएँ; बाकी 3 उंगलियां सीधी ऊपर रखें।',
+        motion: 'nod',
+        pose: { thumb: 'pinched', index: 'pinched', middle: 'up', ring: 'up', pinky: 'up', spread: true, tilt: 0 }
+      },
+      {
+        id: 'call_me',
+        en: 'Call me',
+        hi: 'मुझे कॉल करें',
+        category: 'daily',
+        keywords: ['call me', 'phone', 'call', 'ring', 'कॉल', 'फोन'],
+        poseEn: 'Horizontal Phone: Extend Thumb and Pinky tilted horizontally.',
+        poseHi: 'हॉरिजॉन्टल फोन: अंगूठा और छोटी उंगली फैलाकर हाथ को आड़ा रखें।',
+        motion: 'shake',
+        pose: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: true, tilt: 75 }
+      },
+      {
+        id: 'look',
+        en: 'Look / Danger',
+        hi: 'देखो / खतरा',
+        category: 'emergency',
+        keywords: ['look', 'danger', 'watch out', 'careful', 'see', 'देखो', 'खतरा', 'सावधान'],
+        poseEn: 'Point Sideways: Extend only your Index finger pointing horizontally.',
+        poseHi: 'बगल में इशारा: केवल तर्जनी उंगली को दाएँ या बाएँ सीधा तानें।',
+        motion: 'shake',
+        pose: { thumb: 'curled', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 90 }
+      },
+      {
+        id: 'come',
+        en: 'Come here',
+        hi: 'यहाँ आओ',
+        category: 'daily',
+        keywords: ['come here', 'come', 'approach', 'आओ', 'यहाँ आओ', 'इधर आओ'],
+        poseEn: 'Hooked Index: Bend/curve only your Index finger like a hook; curl others.',
+        poseHi: 'मुड़ी उंगली: केवल तर्जनी उंगली को हुक की तरह आधा मोड़ें।',
+        motion: 'beckon',
+        pose: { thumb: 'curled', index: 'curved', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 }
+      },
+      {
+        id: 'go',
+        en: 'Go / Leave',
+        hi: 'जाओ / निकलो',
+        category: 'daily',
+        keywords: ['go', 'leave', 'exit', 'walk', 'जाओ', 'चलो', 'निकलो'],
+        poseEn: 'Two Fingers Sideways: Point Index & Middle fingers together sideways.',
+        poseHi: 'दो उंगलियां साइड में: तर्जनी और मध्यमा उंगली को बगल की ओर सीधा करें।',
+        motion: 'shake',
+        pose: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: false, tilt: 90 }
+      },
+      {
+        id: 'more',
+        en: 'More',
+        hi: 'और चाहिए',
+        category: 'response',
+        keywords: ['more', 'again', 'extra', 'another', 'और', 'ज्यादा', 'फिर'],
+        poseEn: 'Pinch Upward: Bring all 5 fingertips tightly together pointing straight UP.',
+        poseHi: 'ऊपर पिंच: सभी उंगलियों के सिरों को मिलाकर सीधा ऊपर की ओर रखें।',
+        motion: 'nod',
+        pose: { thumb: 'pinched', index: 'pinched', middle: 'pinched', ring: 'pinched', pinky: 'pinched', spread: false, tilt: 0 }
+      },
+      {
+        id: 'done',
+        en: 'Finished / Done',
+        hi: 'पूरा हुआ / हो गया',
+        category: 'response',
+        keywords: ['finished', 'done', 'complete', 'over', 'ready', 'पूरा', 'हो गया', 'खत्म'],
+        poseEn: 'Four Fingers Up: Hold Index, Middle, Ring, and Pinky UP with Thumb tucked IN.',
+        poseHi: '4 उंगलियां ऊपर: अंगूठा अंदर मोड़कर बाकी चारों उंगलियां सीधी ऊपर रखें।',
+        motion: 'wave',
+        pose: { thumb: 'curled', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: false, tilt: 0 }
+      },
+      {
+        id: 'home',
+        en: 'Home',
+        hi: 'घर',
+        category: 'daily',
+        keywords: ['home', 'house', 'address', 'घर', 'मकान'],
+        poseEn: 'Horizontal Pinch: Pinch fingertips together and hold hand horizontally.',
+        poseHi: 'हॉरिजॉन्टल पिंच: उंगलियों को मिलाकर हाथ को आड़ा (हॉरिजॉन्टल) रखें।',
+        motion: 'static',
+        pose: { thumb: 'pinched', index: 'pinched', middle: 'pinched', ring: 'pinched', pinky: 'pinched', spread: false, tilt: 85 }
+      },
+      {
+        id: 'drink',
+        en: 'Drink / Cup',
+        hi: 'पीना / कप',
+        category: 'daily',
+        keywords: ['drink', 'cup', 'tea', 'coffee', 'juice', 'milk', 'पीना', 'चाय', 'दूध', 'कप'],
+        poseEn: 'C-Shape Hand: Curve all fingers and thumb into the letter "C" like holding a cup.',
+        poseHi: 'C-आकार: कप पकड़ने की तरह सभी उंगलियों और अंगूठे को "C" आकार में मोड़ें।',
+        motion: 'beckon',
+        pose: { thumb: 'curved', index: 'curved', middle: 'curved', ring: 'curved', pinky: 'curved', spread: false, tilt: -15 }
+      },
+      {
+        id: 'question',
+        en: 'Question / What?',
+        hi: 'सवाल / क्या?',
+        category: 'response',
+        keywords: ['question', 'what', 'why', 'where', 'who', 'how', 'सवाल', 'क्या', 'कहाँ', 'कैसे', 'क्यों'],
+        poseEn: 'L-Shape: Extend Thumb and Index finger at a 90° angle; curl other 3 fingers.',
+        poseHi: 'L-आकार: अंगूठा और तर्जनी को 90° (L आकार) में खोलें; बाकी 3 उंगलियां बंद करें।',
+        motion: 'static',
+        pose: { thumb: 'up', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 }
+      },
+      {
+        id: 'friend',
+        en: 'Friend',
+        hi: 'दोस्त / मित्र',
+        category: 'daily',
+        keywords: ['friend', 'buddy', 'pal', 'family', 'दोस्त', 'मित्र', 'साथी'],
+        poseEn: 'Pinky Up: Extend only your Pinky finger upward (promise sign).',
+        poseHi: 'छोटी उंगली ऊपर: केवल अपनी छोटी उंगली (Pinky) सीधी ऊपर रखें।',
+        motion: 'wave',
+        pose: { thumb: 'curled', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: false, tilt: 0 }
+      },
+      {
+        id: 'hospital',
+        en: 'Hospital',
+        hi: 'अस्पताल',
+        category: 'emergency',
+        keywords: ['hospital', 'er', 'medical', 'अस्पताल', 'हॉस्पिटल'],
+        poseEn: 'Three-Finger Sign: Extend Thumb, Index, and Middle fingers; curl Ring & Pinky.',
+        poseHi: '3 उंगलियां (अंगूठा+तर्जनी+मध्यमा): अंगूठा, तर्जनी और मध्यमा ऊपर रखें।',
+        motion: 'pulse',
+        pose: { thumb: 'up', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 }
+      },
+      {
+        id: 'attention',
+        en: 'Attention / Alert',
+        hi: 'ध्यान दें / अलर्ट',
+        category: 'emergency',
+        keywords: ['attention', 'alert', 'listen', 'warning', 'ध्यान', 'अलर्ट', 'सुनो'],
+        poseEn: 'Horns Sign: Extend Index and Pinky fingers UP; tuck Thumb, Middle, and Ring.',
+        poseHi: 'हॉर्न्स साइन: तर्जनी और छोटी उंगली ऊपर रखें; अंगूठा और बीच की 2 उंगलियां बंद करें।',
+        motion: 'pulse',
+        pose: { thumb: 'curled', index: 'up', middle: 'curled', ring: 'curled', pinky: 'up', spread: true, tilt: 0 }
+      }
+    ];
+
+    /*************************************************************************
+     * 3. A-Z ASL FINGERSPELLING POSES (FOR FALLBACK ON UNKNOWN WORDS)
+     *************************************************************************/
+    const ASL_ALPHABET = {
+      A: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      B: { thumb: 'curled', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: false, tilt: 0 },
+      C: { thumb: 'curved', index: 'curved', middle: 'curved', ring: 'curved', pinky: 'curved', spread: false, tilt: -15 },
+      D: { thumb: 'pinched', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      E: { thumb: 'crossed', index: 'curved', middle: 'curved', ring: 'curved', pinky: 'curved', spread: false, tilt: 0 },
+      F: { thumb: 'pinched', index: 'pinched', middle: 'up', ring: 'up', pinky: 'up', spread: true, tilt: 0 },
+      G: { thumb: 'up', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 85 },
+      H: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: false, tilt: 85 },
+      I: { thumb: 'curled', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: false, tilt: 0 },
+      J: { thumb: 'curled', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: false, tilt: -25 },
+      K: { thumb: 'up', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 },
+      L: { thumb: 'up', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 },
+      M: { thumb: 'crossed', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 10 },
+      N: { thumb: 'crossed', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: -10 },
+      O: { thumb: 'pinched', index: 'pinched', middle: 'pinched', ring: 'pinched', pinky: 'pinched', spread: false, tilt: 0 },
+      P: { thumb: 'up', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: true, tilt: 135 },
+      Q: { thumb: 'up', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: true, tilt: 170 },
+      R: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: false, tilt: 8 },
+      S: { thumb: 'crossed', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      T: { thumb: 'crossed', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      U: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      V: { thumb: 'curled', index: 'up', middle: 'up', ring: 'curled', pinky: 'curled', spread: true, tilt: 0 },
+      W: { thumb: 'curled', index: 'up', middle: 'up', ring: 'up', pinky: 'curled', spread: true, tilt: 0 },
+      X: { thumb: 'curled', index: 'curved', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: 0 },
+      Y: { thumb: 'up', index: 'curled', middle: 'curled', ring: 'curled', pinky: 'up', spread: true, tilt: 0 },
+      Z: { thumb: 'curled', index: 'up', middle: 'curled', ring: 'curled', pinky: 'curled', spread: false, tilt: -20 }
+    };
+
+    /*************************************************************************
+     * 4. GLOBAL APPLICATION STATE
+     *************************************************************************/
+    const state = {
+      lang: 'en',              // 'en' | 'hi'
+      voiceEnabled: true,      // Global TTS toggle
+      activeTab: 'camera',     // 'camera' | 'reverse' | 'dictionary'
+      dictFilter: 'all',
+
+      // Camera & MediaPipe state
+      cameraRunning: false,
+      handsInstance: null,
+      cameraInstance: null,
+      videoStream: null,
+
+      // Stability / Hold logic for locking in signs
+      candidateSignId: null,
+      candidateStartTime: 0,
+      holdDurationMs: 700,     // 0.7 seconds steady hold required
+      lastConfirmedSignId: null,
+      lastConfirmedTime: 0,
+      cooldownMs: 1600,        // Avoid duplicate rapid firing of the same sign
+
+      // Sentence transcript array of sign objects
+      transcript: [],
+
+      // Reverse Mode (Text/Voice -> Sign) state
+      reverseTokens: [],       // Array of { type: 'sign'|'letter', label, subLabel, pose, motion, tip }
+      reverseIndex: 0,
+      reversePlaying: false,
+      reverseLoop: false,
+      reverseSpeed: 1.0,
+      reverseTimer: null,
+      recognition: null,
+      isListening: false
+    };
+
+    /*************************************************************************
+     * 5. DYNAMIC SVG HAND AVATAR GENERATOR
+     * Renders a crisp, anatomically clear vector hand for any pose & motion.
+     *************************************************************************/
+    function renderHandSVG(pose, motion = 'static', sizeClass = 'w-full h-full') {
+      const p = pose || { thumb: 'up', index: 'up', middle: 'up', ring: 'up', pinky: 'up', spread: true, tilt: 0 };
+      const animClass = `anim-${motion || 'static'}`;
+      const tilt = p.tilt || 0;
+      const spread = !!p.spread;
+
+      // Helper to render each of the 4 main fingers (index, middle, ring, pinky)
+      function fingerPath(x, baseY, len, width, mode, spreadAngle) {
+        const angle = spread ? spreadAngle : 0;
+        if (mode === 'up') {
+          return `
+            <g transform="rotate(${angle} ${x} ${baseY})">
+              <rect x="${x - width / 2}" y="${baseY - len}" width="${width}" height="${len + 6}" rx="${width / 2}" fill="url(#handGrad)" stroke="#c7d2fe" stroke-width="1.8" />
+              <line x1="${x - width / 4}" y1="${baseY - len * 0.55}" x2="${x + width / 4}" y2="${baseY - len * 0.55}" stroke="#818cf8" stroke-width="1.4" stroke-linecap="round" opacity="0.65" />
+            </g>`;
+        } else if (mode === 'curved') {
+          return `
+            <g transform="rotate(${angle} ${x} ${baseY})">
+              <path d="M ${x - width / 2} ${baseY} L ${x - width / 2} ${baseY - len * 0.55} Q ${x} ${baseY - len * 0.85} ${x + width * 0.7} ${baseY - len * 0.42} L ${x + width / 2} ${baseY} Z"
+                fill="url(#handGrad)" stroke="#c7d2fe" stroke-width="1.8" stroke-linejoin="round" />
+            </g>`;
+        } else if (mode === 'pinched') {
+          return `
+            <g>
+              <rect x="${x - width / 2}" y="${baseY - len * 0.52}" width="${width}" height="${len * 0.55}" rx="${width / 2}" fill="url(#handGrad)" stroke="#a5b4fc" stroke-width="1.8" />
+              <circle cx="${x}" cy="${baseY - len * 0.45}" r="${width * 0.35}" fill="#38bdf8" opacity="0.85" />
+            </g>`;
+        } else {
+          // curled into palm
+          return `
+            <rect x="${x - width / 2}" y="${baseY - 12}" width="${width}" height="24" rx="${width / 2}" fill="#4338ca" stroke="#a5b4fc" stroke-width="1.8" />`;
+        }
+      }
+
+      // Thumb rendering
+      let thumbMarkup = '';
+      if (p.thumb === 'up') {
+        thumbMarkup = `
+          <g transform="rotate(-38 40 122)">
+            <rect x="29" y="72" width="19" height="54" rx="9.5" fill="url(#handGrad)" stroke="#c7d2fe" stroke-width="1.8" />
+          </g>`;
+      } else if (p.thumb === 'curved') {
+        thumbMarkup = `
+          <path d="M 42 126 Q 18 102 36 82 Q 46 78 52 90 L 48 122 Z" fill="url(#handGrad)" stroke="#c7d2fe" stroke-width="1.8" />`;
+      } else if (p.thumb === 'pinched') {
+        thumbMarkup = `
+          <g transform="rotate(20 44 115)">
+            <rect x="34" y="74" width="18" height="44" rx="9" fill="url(#handGrad)" stroke="#38bdf8" stroke-width="2" />
+          </g>`;
+      } else if (p.thumb === 'crossed') {
+        thumbMarkup = `
+          <rect x="44" y="96" width="46" height="17" rx="8.5" fill="#6366f1" stroke="#e0e7ff" stroke-width="1.8" />`;
+      } else {
+        // tucked / curled
+        thumbMarkup = `
+          <rect x="42" y="102" width="32" height="16" rx="8" fill="#4338ca" stroke="#a5b4fc" stroke-width="1.6" />`;
+      }
+
+      // Motion indicator overlay (arrows / rings)
+      let motionHintSvg = '';
+      if (motion === 'wave') {
+        motionHintSvg = `
+          <path d="M 20 48 Q 14 34 26 24" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 3" />
+          <path d="M 140 48 Q 146 34 134 24" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 3" />`;
+      } else if (motion === 'pulse') {
+        motionHintSvg = `
+          <circle cx="80" cy="88" r="68" fill="none" stroke="#f87171" stroke-width="2" stroke-dasharray="6 6" opacity="0.6" />`;
+      } else if (motion === 'circle') {
+        motionHintSvg = `
+          <circle cx="80" cy="96" r="56" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8 5" opacity="0.65" />`;
+      }
+
+      return `
+        <svg viewBox="0 0 160 180" class="${sizeClass} overflow-visible">
+          <defs>
+            <linearGradient id="handGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#818cf8" />
+              <stop offset="100%" stop-color="#4f46e5" />
+            </linearGradient>
+            <linearGradient id="palmGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#6366f1" />
+              <stop offset="100%" stop-color="#3730a3" />
+            </linearGradient>
+          </defs>
+          ${motionHintSvg}
+          <g class="${animClass}">
+            <g transform="rotate(${tilt} 80 105)">
+              <!-- Wrist -->
+              <rect x="57" y="140" width="46" height="28" rx="10" fill="#312e81" stroke="#818cf8" stroke-width="1.5" opacity="0.9" />
+              <!-- Four Main Fingers -->
+              ${fingerPath(54, 92, 56, 16, p.index, -12)}
+              ${fingerPath(73, 88, 63, 16, p.middle, -3)}
+              ${fingerPath(92, 91, 58, 16, p.ring, 5)}
+              ${fingerPath(110, 98, 46, 14, p.pinky, 15)}
+              <!-- Palm -->
+              <rect x="44" y="88" width="74" height="60" rx="22" fill="url(#palmGrad)" stroke="#c7d2fe" stroke-width="2" />
+              <!-- Palm crease detail -->
+              <path d="M 56 116 Q 80 124 104 114" fill="none" stroke="#a5b4fc" stroke-width="1.6" stroke-linecap="round" opacity="0.5" />
+              <!-- Thumb -->
+              ${thumbMarkup}
+            </g>
+          </g>
+        </svg>`;
+    }
+
+    /*************************************************************************
+     * 6. 21-LANDMARK GEOMETRIC SIGN CLASSIFIER (30 SIGNS)
+     * Computes scale-invariant distances, finger extension states, curl,
+     * spread, pinch clusters, and orientation from MediaPipe landmarks.
+     *************************************************************************/
+    function dist2D(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function classifyHandSign(landmarks) {
+      if (!landmarks || landmarks.length < 21) return null;
+
+      const wrist = landmarks[0];
+      const thumbCmc = landmarks[1], thumbMcp = landmarks[2], thumbIp = landmarks[3], thumbTip = landmarks[4];
+      const indexMcp = landmarks[5], indexPip = landmarks[6], indexDip = landmarks[7], indexTip = landmarks[8];
+      const middleMcp = landmarks[9], middlePip = landmarks[10], middleDip = landmarks[11], middleTip = landmarks[12];
+      const ringMcp = landmarks[13], ringPip = landmarks[14], ringDip = landmarks[15], ringTip = landmarks[16];
+      const pinkyMcp = landmarks[17], pinkyPip = landmarks[18], pinkyDip = landmarks[19], pinkyTip = landmarks[20];
+
+      // Scale reference: palm length from wrist (0) to middle MCP (9)
+      const palmSize = Math.max(dist2D(wrist, middleMcp), 0.01);
+
+      // Hand orientation vector (wrist -> middle MCP)
+      const dx = (middleMcp.x - wrist.x) / palmSize;
+      const dy = (middleMcp.y - wrist.y) / palmSize;
+      const isHorizontal = Math.abs(dx) > 0.62;
+      const isDiagonal = Math.abs(dx) > 0.28 && Math.abs(dx) <= 0.62 && dy < -0.25;
+      const isUpright = dy < -0.55;
+      const isHighInFrame = middleMcp.y < 0.34; // Raised hand near top of webcam
+
+      // Finger extension check (tip significantly farther from wrist than PIP)
+      const isFingerExt = (tip, pip, mcp) => {
+        const dTip = dist2D(tip, wrist);
+        const dPip = dist2D(pip, wrist);
+        const dMcp = dist2D(mcp, wrist);
+        return dTip > dPip * 1.12 && dTip > dMcp * 1.32;
+      };
+
+      // Half-curved finger check (e.g. Come Here hook or C-shape)
+      const isFingerCurved = (tip, pip, mcp) => {
+        const dTip = dist2D(tip, wrist);
+        const dPip = dist2D(pip, wrist);
+        return dTip <= dPip * 1.12 && dTip > dPip * 0.78;
+      };
+
+      const indexExt = isFingerExt(indexTip, indexPip, indexMcp);
+      const middleExt = isFingerExt(middleTip, middlePip, middleMcp);
+      const ringExt = isFingerExt(ringTip, ringPip, ringMcp);
+      const pinkyExt = isFingerExt(pinkyTip, pinkyPip, pinkyMcp);
+
+      // Thumb extension: tip is far from pinky MCP & index MCP relative to palm size
+      const thumbToPinkyMcp = dist2D(thumbTip, pinkyMcp) / palmSize;
+      const thumbIpToPinkyMcp = dist2D(thumbIp, pinkyMcp) / palmSize;
+      const thumbToIndexMcp = dist2D(thumbTip, indexMcp) / palmSize;
+      const thumbExt = thumbToPinkyMcp > thumbIpToPinkyMcp * 1.08 && thumbToIndexMcp > 0.55;
+
+      // Key normalized distances
+      const dThumbIndex = dist2D(thumbTip, indexTip) / palmSize;
+      const dThumbMiddle = dist2D(thumbTip, middleTip) / palmSize;
+      const dIndexMiddle = dist2D(indexTip, middleTip) / palmSize;
+      const dMiddleRing = dist2D(middleTip, ringTip) / palmSize;
+      const fingersSpread = dIndexMiddle > 0.34 || dMiddleRing > 0.34;
+
+      // Pinch cluster (all fingertips near thumb)
+      const dThumbRing = dist2D(thumbTip, ringTip) / palmSize;
+      const isPinchCluster = dThumbIndex < 0.38 && dThumbMiddle < 0.45 && dThumbRing < 0.58;
+
+      // T-shape thumb tucked between index & middle
+      const thumbBetweenIndexMiddle =
+        dist2D(thumbTip, indexPip) / palmSize < 0.34 &&
+        dist2D(thumbTip, middlePip) / palmSize < 0.38 &&
+        !thumbExt;
+
+      // Count extended non-thumb fingers
+      const extCount = [indexExt, middleExt, ringExt, pinkyExt].filter(Boolean).length;
+
+      // --- DECISION TREE FOR ALL 30 SIGNS ---
+
+      // 1. OK / Good (Thumb + Index pinched, other 3 fingers UP)
+      if (dThumbIndex < 0.35 && middleExt && ringExt && pinkyExt) {
+        return { id: 'good', confidence: 0.94 };
+      }
+
+      // 2. All 4 main fingers UP + Thumb UP (5 fingers open)
+      if (extCount === 4 && thumbExt) {
+        if (isHorizontal) {
+          return { id: 'please', confidence: 0.90 };
+        }
+        if (isHighInFrame && fingersSpread) {
+          return { id: 'help', confidence: 0.93 };
+        }
+        if (fingersSpread) {
+          return { id: 'hello', confidence: 0.94 };
+        }
+        if (isDiagonal) {
+          return { id: 'thank_you', confidence: 0.89 };
+        }
+        return { id: 'stop', confidence: 0.92 };
+      }
+
+      // 3. Finished / Done (4 fingers UP, Thumb tucked IN)
+      if (extCount === 4 && !thumbExt) {
+        return { id: 'done', confidence: 0.91 };
+      }
+
+      // 4. I need water (W-Sign: Index + Middle + Ring UP, Pinky curled)
+      if (indexExt && middleExt && ringExt && !pinkyExt) {
+        return { id: 'water', confidence: 0.93 };
+      }
+
+      // 5. Hospital (Thumb + Index + Middle UP, Ring + Pinky curled)
+      if (thumbExt && indexExt && middleExt && !ringExt && !pinkyExt) {
+        return { id: 'hospital', confidence: 0.90 };
+      }
+
+      // 6. I love you (Thumb + Index + Pinky UP)
+      if (thumbExt && indexExt && !middleExt && !ringExt && pinkyExt) {
+        return { id: 'love', confidence: 0.95 };
+      }
+
+      // 7. Attention (Horns: Index + Pinky UP, Thumb tucked)
+      if (!thumbExt && indexExt && !middleExt && !ringExt && pinkyExt) {
+        return { id: 'attention', confidence: 0.92 };
+      }
+
+      // 8. Emergency / Call 911 vs Call me (Thumb + Pinky UP)
+      if (thumbExt && !indexExt && !middleExt && !ringExt && pinkyExt) {
+        if (isHorizontal) {
+          return { id: 'call_me', confidence: 0.91 };
+        }
+        return { id: 'emergency', confidence: 0.94 };
+      }
+
+      // 9. Two fingers (Index + Middle UP, Thumb tucked) -> Go / Peace / Doctor
+      if (!thumbExt && indexExt && middleExt && !ringExt && !pinkyExt) {
+        if (isHorizontal) {
+          return { id: 'go', confidence: 0.90 };
+        }
+        if (dIndexMiddle > 0.30) {
+          return { id: 'peace', confidence: 0.94 };
+        }
+        return { id: 'doctor', confidence: 0.91 };
+      }
+
+      // 10. Question / What? (L-shape: Thumb + Index UP)
+      if (thumbExt && indexExt && !middleExt && !ringExt && !pinkyExt) {
+        return { id: 'question', confidence: 0.93 };
+      }
+
+      // 11. Only Index UP -> Look / Danger (sideways) or Wait (upright)
+      if (!thumbExt && indexExt && !middleExt && !ringExt && !pinkyExt) {
+        if (isHorizontal) {
+          return { id: 'look', confidence: 0.92 };
+        }
+        return { id: 'wait', confidence: 0.94 };
+      }
+
+      // 12. Only Pinky UP -> Friend
+      if (!thumbExt && !indexExt && !middleExt && !ringExt && pinkyExt) {
+        return { id: 'friend', confidence: 0.92 };
+      }
+
+      // 13. Only Thumb extended -> Yes (Thumbs Up) or No (Thumbs Down)
+      if (thumbExt && extCount === 0) {
+        if (thumbTip.y < thumbMcp.y - 0.08 * palmSize) {
+          return { id: 'yes', confidence: 0.95 };
+        }
+        if (thumbTip.y > thumbMcp.y + 0.08 * palmSize) {
+          return { id: 'no', confidence: 0.94 };
+        }
+      }
+
+      // 14. Pinched clusters -> More / Home / Food
+      if (isPinchCluster && extCount === 0) {
+        if (isHorizontal) {
+          return { id: 'home', confidence: 0.87 };
+        }
+        if (isUpright && dThumbRing < 0.45) {
+          return { id: 'more', confidence: 0.88 };
+        }
+        return { id: 'food', confidence: 0.89 };
+      }
+
+      // 15. C-Shape -> Drink / Cup
+      if (extCount === 0 && !isPinchCluster &&
+          isFingerCurved(indexTip, indexPip, indexMcp) &&
+          isFingerCurved(middleTip, middlePip, middleMcp) &&
+          dThumbIndex > 0.38 && dThumbIndex < 1.05) {
+        return { id: 'drink', confidence: 0.87 };
+      }
+
+      // 16. Hooked Index -> Come here
+      if (extCount === 0 && !thumbExt &&
+          isFingerCurved(indexTip, indexPip, indexMcp) &&
+          !isFingerCurved(middleTip, middlePip, middleMcp)) {
+        return { id: 'come', confidence: 0.86 };
+      }
+
+      // 17. Closed Fists -> Bathroom (T-fist) / Sorry (horizontal fist) / Pain (upright fist)
+      if (extCount === 0 && !thumbExt) {
+        if (thumbBetweenIndexMiddle) {
+          return { id: 'bathroom', confidence: 0.88 };
+        }
+        if (isHorizontal) {
+          return { id: 'sorry', confidence: 0.88 };
+        }
+        return { id: 'pain', confidence: 0.90 };
+      }
+
+      return null;
+    }
+
+    /*************************************************************************
+     * 7. SPEECH SYNTHESIS (TTS) & EMERGENCY SOS
+     *************************************************************************/
+    function speakText(text, forceLang = null) {
+      if (!state.voiceEnabled) return;
+      if (!('speechSynthesis' in window)) {
+        showToast('Speech synthesis not supported in this browser.', 'warn');
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        const targetLang = forceLang || (state.lang === 'hi' ? 'hi-IN' : 'en-US');
+        utter.lang = targetLang;
+        utter.rate = 1.0;
+        utter.pitch = 1.0;
+
+        // Pick best matching voice if available
+        const voices = window.speechSynthesis.getVoices();
+        const matched = voices.find(v => v.lang.toLowerCase().startsWith(targetLang.slice(0, 2)));
+        if (matched) utter.voice = matched;
+
+        window.speechSynthesis.speak(utter);
+      } catch (err) {
+        console.error('TTS error:', err);
+      }
+    }
+
+    function toggleVoiceOutput() {
+      state.voiceEnabled = !state.voiceEnabled;
+      const btn = document.getElementById('voiceToggleBtn');
+      const icon = document.getElementById('voiceIcon');
+      const badge = document.getElementById('voiceStateBadge');
+
+      if (state.voiceEnabled) {
+        btn.className = 'flex items-center gap-2 px-3 py-2 rounded-xl border transition font-semibold text-xs sm:text-sm bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25';
+        icon.textContent = '🔊';
+        badge.textContent = 'ON';
+        badge.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-emerald-500 text-slate-950';
+        showToast(state.lang === 'hi' ? 'वॉइस आउटपुट चालू किया गया' : 'Voice output enabled', 'success');
+      } else {
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        btn.className = 'flex items-center gap-2 px-3 py-2 rounded-xl border transition font-semibold text-xs sm:text-sm bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700';
+        icon.textContent = '🔇';
+        badge.textContent = 'OFF';
+        badge.className = 'px-1.5 py-0.5 rounded-md text-[10px] font-extrabold bg-slate-600 text-slate-200';
+        showToast(state.lang === 'hi' ? 'वॉइस आउटपुट बंद किया गया' : 'Voice output muted', 'info');
+      }
+    }
+
+    function triggerEmergencySOS(enText, hiText) {
+      const banner = document.getElementById('emergencyBanner');
+      const bannerText = document.getElementById('emergencyBannerText');
+      const msg = state.lang === 'hi' ? `${hiText} (${enText})` : `${enText} (${hiText})`;
+      bannerText.textContent = msg;
+      banner.classList.remove('hidden');
+
+      // Always speak SOS even if muted? Respect voice toggle, but notify if muted
+      if (state.voiceEnabled) {
+        speakText(state.lang === 'hi' ? hiText : enText);
+      } else {
+        showToast(state.lang === 'hi' ? 'वॉइस बंद है — अलर्ट बैनर दिखाया गया' : 'Voice is muted — visual SOS banner shown', 'warn');
+      }
+
+      // Auto-dismiss after 7 seconds
+      clearTimeout(window._sosTimer);
+      window._sosTimer = setTimeout(dismissEmergencyBanner, 7000);
+    }
+
+    function dismissEmergencyBanner() {
+      document.getElementById('emergencyBanner').classList.add('hidden');
+    }
+
+    /*************************************************************************
+     * 8. CAMERA & MEDIAPIPE HANDS INTEGRATION
+     *************************************************************************/
+    const HAND_CONNECTIONS_LIST = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],
+      [13,17],[17,18],[18,19],[19,20],
+      [0,17]
+    ];
+
+    function drawHandLandmarksOnCanvas(ctx, landmarks, width, height) {
+      // Draw skeletal connections
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      for (const [startIdx, endIdx] of HAND_CONNECTIONS_LIST) {
+        const a = landmarks[startIdx];
+        const b = landmarks[endIdx];
+        ctx.beginPath();
+        ctx.moveTo(a.x * width, a.y * height);
+        ctx.lineTo(b.x * width, b.y * height);
+        ctx.stroke();
+      }
+
+      // Draw 21 landmark dots
+      for (let i = 0; i < landmarks.length; i++) {
+        const pt = landmarks[i];
+        const isTip = [4, 8, 12, 16, 20].includes(i);
+        ctx.beginPath();
+        ctx.arc(pt.x * width, pt.y * height, isTip ? 6 : 4, 0, Math.PI * 2);
+        ctx.fillStyle = isTip ? '#34d399' : '#818cf8';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#0f172a';
+        ctx.stroke();
+      }
+    }
+
+    function onMediaPipeResults(results) {
+      const canvas = document.getElementById('handCanvas');
+      const ctx = canvas.getContext('2d');
+      const video = document.getElementById('webcamVideo');
+
+      // Resize canvas smoothly to match video stream aspect
+      const w = video.videoWidth || 640;
+      const h = video.videoHeight || 480;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+
+      ctx.save();
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(results.image, 0, 0, w, h);
+
+      const multiHands = results.multiHandLandmarks || [];
+      document.getElementById('hudHandCount').textContent = multiHands.length;
+
+      if (multiHands.length > 0) {
+        // Draw all detected hands
+        for (const lm of multiHands) {
+          drawHandLandmarksOnCanvas(ctx, lm, w, h);
+        }
+
+        // Classify primary hand
+        const result = classifyHandSign(multiHands[0]);
+        handleLiveClassification(result);
+      } else {
+        handleLiveClassification(null);
+      }
+
+      ctx.restore();
+    }
+
+    function handleLiveClassification(result) {
+      const now = performance.now();
+      const holdBar = document.getElementById('holdProgressBar');
+      const holdPctText = document.getElementById('holdPercentText');
+
+      if (!result) {
+        state.candidateSignId = null;
+        holdBar.style.width = '0%';
+        holdPctText.textContent = '0%';
+        document.getElementById('hudSignEn').textContent = '—';
+        document.getElementById('hudSignHi').textContent = '—';
+        document.getElementById('hudConfidence').textContent = '0%';
+        return;
+      }
+
+      const signObj = SIGNS_DB.find(s => s.id === result.id);
+      if (!signObj) return;
+
+      const confPct = Math.round(result.confidence * 100);
+      document.getElementById('hudSignEn').textContent = signObj.en;
+      document.getElementById('hudSignHi').textContent = signObj.hi;
+      document.getElementById('hudConfidence').textContent = `${confPct}%`;
+      updateCurrentSignCard(signObj, confPct);
+
+      // Stability / Hold timer check
+      if (state.candidateSignId !== signObj.id) {
+        state.candidateSignId = signObj.id;
+        state.candidateStartTime = now;
+      }
+
+      const elapsed = now - state.candidateStartTime;
+      const progress = Math.min(100, Math.round((elapsed / state.holdDurationMs) * 100));
+      holdBar.style.width = `${progress}%`;
+      holdPctText.textContent = `${progress}%`;
+
+      if (elapsed >= state.holdDurationMs) {
+        // Check cooldown so holding the same sign doesn't spam
+        if (state.lastConfirmedSignId !== signObj.id || (now - state.lastConfirmedTime) > state.cooldownMs) {
+          confirmDetectedSign(signObj, confPct);
+          state.lastConfirmedSignId = signObj.id;
+          state.lastConfirmedTime = now;
+          state.candidateStartTime = now; // Reset hold bar
+        }
+      }
+    }
+
+    async function startCamera() {
+      const overlay = document.getElementById('cameraOverlay');
+      const statusDot = document.getElementById('camStatusDot');
+      const statusText = document.getElementById('camStatusText');
+      const startBtn = document.getElementById('startCamBtn');
+      const stopBtn = document.getElementById('stopCamBtn');
+      const liveHud = document.getElementById('liveHud');
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showCameraFallbackError('Camera API unavailable in this browser. Use the Simulate Sign bar below!');
+        return;
+      }
+
+      try {
+        statusText.textContent = state.lang === 'hi' ? 'कैमरा और AI मॉडल लोड हो रहा है...' : 'Loading camera & AI Hand Tracker...';
+        statusDot.className = 'h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse';
+
+        const video = document.getElementById('webcamVideo');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        state.videoStream = stream;
+        video.srcObject = stream;
+        await video.play();
+
+        if (typeof Hands === 'undefined') {
+          throw new Error('MediaPipe Hands library failed to load from CDN.');
+        }
+
+        if (!state.handsInstance) {
+          state.handsInstance = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+          });
+          state.handsInstance.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.6
+          });
+          state.handsInstance.onResults(onMediaPipeResults);
+        }
+
+        state.cameraRunning = true;
+        overlay.classList.add('hidden');
+        liveHud.classList.remove('hidden');
+        startBtn.classList.add('hidden');
+        stopBtn.classList.remove('hidden');
+        statusDot.className = 'h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse';
+        statusText.textContent = state.lang === 'hi' ? 'लाइव ट्रैकिंग चालू है' : 'Live Hand Tracking Active';
+
+        // Animation frame loop feeding video frames into MediaPipe Hands
+        async function processFrame() {
+          if (!state.cameraRunning) return;
+          if (video.readyState >= 2 && state.handsInstance) {
+            try {
+              await state.handsInstance.send({ image: video });
+            } catch (e) {
+              // Ignore transient frame errors
+            }
+          }
+          requestAnimationFrame(processFrame);
+        }
+        requestAnimationFrame(processFrame);
+
+      } catch (err) {
+        console.error('Camera init error:', err);
+        stopCamera();
+        const msg = state.lang === 'hi'
+          ? 'कैमरा एक्सेस नहीं मिला। कृपया नीचे दिए गए "सिमुलेट साइन" बटन से टेस्ट करें!'
+          : 'Camera access denied or unavailable. You can still test everything using the Simulate Sign bar below!';
+        showCameraFallbackError(msg);
+      }
+    }
+
+    function showCameraFallbackError(msg) {
+      const overlay = document.getElementById('cameraOverlay');
+      overlay.classList.remove('hidden');
+      document.getElementById('overlayTitle').textContent = state.lang === 'hi' ? 'कैमरा उपलब्ध नहीं है' : 'Camera Unavailable';
+      document.getElementById('overlayDesc').textContent = msg;
+      document.getElementById('camStatusDot').className = 'h-2.5 w-2.5 rounded-full bg-rose-500';
+      document.getElementById('camStatusText').textContent = state.lang === 'hi' ? 'कैमरा बंद / उपलब्ध नहीं' : 'Camera Unavailable — Demo Mode Ready';
+      showToast(msg, 'warn');
+    }
+
+    function stopCamera() {
+      state.cameraRunning = false;
+      if (state.videoStream) {
+        state.videoStream.getTracks().forEach(t => t.stop());
+        state.videoStream = null;
+      }
+      const video = document.getElementById('webcamVideo');
+      video.srcObject = null;
+
+      document.getElementById('cameraOverlay').classList.remove('hidden');
+      document.getElementById('liveHud').classList.add('hidden');
+      document.getElementById('startCamBtn').classList.remove('hidden');
+      document.getElementById('stopCamBtn').classList.add('hidden');
+      document.getElementById('camStatusDot').className = 'h-2.5 w-2.5 rounded-full bg-slate-500';
+      document.getElementById('camStatusText').textContent = I18N[state.lang].camReady;
+      document.getElementById('holdProgressBar').style.width = '0%';
+      document.getElementById('holdPercentText').textContent = '0%';
+    }
+
+    /*************************************************************************
+     * 9. SIGN CONFIRMATION, SIMULATE BAR & SENTENCE BUILDER
+     *************************************************************************/
+    function updateCurrentSignCard(signObj, confPct) {
+      document.getElementById('mainDetectedEn').textContent = signObj.en;
+      document.getElementById('mainDetectedHi').textContent = signObj.hi;
+      document.getElementById('confidenceBar').style.width = `${confPct}%`;
+      document.getElementById('confidenceText').textContent = `${confPct}%`;
+      document.getElementById('detectedSvgBox').innerHTML = renderHandSVG(signObj.pose, signObj.motion);
+
+      const catBadge = document.getElementById('signCategoryBadge');
+      if (signObj.category === 'emergency') {
+        catBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-500/20 text-red-300 border border-red-500/40';
+        catBadge.textContent = '🚨 Emergency';
+      } else if (signObj.category === 'daily') {
+        catBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40';
+        catBadge.textContent = '☀️ Daily';
+      } else {
+        catBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+        catBadge.textContent = '💬 Response';
+      }
+    }
+
+    function confirmDetectedSign(signObj, confPct = 98) {
+      updateCurrentSignCard(signObj, confPct);
+      state.transcript.push(signObj);
+      renderTranscript();
+
+      // Speak aloud if Voice Output is ON
+      speakText(state.lang === 'hi' ? signObj.hi : signObj.en);
+
+      // Flash emergency banner if emergency sign
+      if (signObj.id === 'help' || signObj.id === 'emergency') {
+        const banner = document.getElementById('emergencyBanner');
+        document.getElementById('emergencyBannerText').textContent = `${signObj.en} — ${signObj.hi}`;
+        banner.classList.remove('hidden');
+        clearTimeout(window._sosTimer);
+        window._sosTimer = setTimeout(dismissEmergencyBanner, 5000);
+      }
+    }
+
+    function simulateSignById(id) {
+      const signObj = SIGNS_DB.find(s => s.id === id);
+      if (!signObj) return;
+
+      // Animate progress bar briefly for visual feedback
+      const holdBar = document.getElementById('holdProgressBar');
+      const holdPct = document.getElementById('holdPercentText');
+      holdBar.style.width = '100%';
+      holdPct.textContent = '100%';
+      setTimeout(() => {
+        if (!state.cameraRunning) {
+          holdBar.style.width = '0%';
+          holdPct.textContent = '0%';
+        }
+      }, 450);
+
+      confirmDetectedSign(signObj, 99);
+    }
+
+    function renderSimulateBar() {
+      const container = document.getElementById('simulateSignBar');
+      container.innerHTML = SIGNS_DB.map(sign => {
+        const isEmg = sign.category === 'emergency';
+        const label = state.lang === 'hi' ? sign.hi : sign.en;
+        return `
+          <button onclick="simulateSignById('${sign.id}')"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition active:scale-95 border ${
+              isEmg
+                ? 'bg-red-950/40 hover:bg-red-900/60 text-red-200 border-red-500/30'
+                : 'bg-slate-800/80 hover:bg-indigo-600/30 text-slate-200 border-slate-700'
+            }">
+            ${isEmg ? '🚨 ' : ''}${label}
+          </button>`;
+      }).join('');
+    }
+
+    function renderTranscript() {
+      const box = document.getElementById('transcriptBox');
+      const countBadge = document.getElementById('wordCountBadge');
+      countBadge.textContent = `${state.transcript.length} ${state.lang === 'hi' ? 'संकेत' : 'signs'}`;
+
+      if (state.transcript.length === 0) {
+        box.innerHTML = `<p class="text-xs sm:text-sm text-slate-500 italic">${I18N[state.lang].emptyTranscript}</p>`;
+        return;
+      }
+
+      box.innerHTML = state.transcript.map((item, idx) => {
+        const text = state.lang === 'hi' ? item.hi : item.en;
+        const isEmg = item.category === 'emergency';
+        return `
+          <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold border ${
+            isEmg
+              ? 'bg-red-500/15 border-red-500/40 text-red-200'
+              : 'bg-indigo-500/15 border-indigo-500/40 text-indigo-100'
+          }">
+            <span>${text}</span>
+            <button onclick="removeTranscriptIndex(${idx})" class="text-slate-400 hover:text-white ml-0.5 text-[11px]">✕</button>
+          </span>`;
+      }).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function removeTranscriptIndex(idx) {
+      state.transcript.splice(idx, 1);
+      renderTranscript();
+    }
+
+    function undoLastSign() {
+      if (state.transcript.length === 0) return;
+      state.transcript.pop();
+      renderTranscript();
+    }
+
+    function clearTranscript() {
+      state.transcript = [];
+      renderTranscript();
+    }
+
+    function speakFullSentence() {
+      if (state.transcript.length === 0) {
+        showToast(state.lang === 'hi' ? 'बोलने के लिए कोई वाक्य नहीं है' : 'No signs in transcript yet', 'info');
+        return;
+      }
+      const sentence = state.transcript.map(s => state.lang === 'hi' ? s.hi : s.en).join('. ');
+      if (!state.voiceEnabled) {
+        showToast(state.lang === 'hi' ? 'कृपया ऊपर से वॉइस ON करें' : 'Please turn Voice ON in the top header', 'warn');
+        return;
+      }
+      speakText(sentence);
+    }
+
+    function copyTranscript() {
+      if (state.transcript.length === 0) {
+        showToast(state.lang === 'hi' ? 'कॉपी करने के लिए कुछ नहीं है' : 'Nothing to copy yet', 'info');
+        return;
+      }
+      const text = state.transcript.map(s => state.lang === 'hi' ? s.hi : s.en).join(' ');
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast(state.lang === 'hi' ? 'वाक्य कॉपी हो गया!' : 'Sentence copied to clipboard!', 'success');
+      } catch (e) {
+        showToast('Could not copy text.', 'warn');
+      }
+      document.body.removeChild(ta);
+    }
+
+    /*************************************************************************
+     * 10. TAB 2: TEXT & SPEECH -> SIGN LANGUAGE (BIDIRECTIONAL REVERSE MODE)
+     *************************************************************************/
+    // Lightweight Hindi-to-Latin fallback map for fingerspelling unknown Hindi words
+    const HI_TO_LATIN = {
+      'अ':'A','आ':'A','इ':'I','ई':'I','उ':'U','ऊ':'U','ए':'E','ऐ':'E','ओ':'O','औ':'O',
+      'क':'K','ख':'K','ग':'G','घ':'G','च':'C','छ':'C','ज':'J','झ':'J','ट':'T','ठ':'T',
+      'ड':'D','ढ':'D','ण':'N','त':'T','थ':'T','द':'D','ध':'D','न':'N','प':'P','फ':'F',
+      'ब':'B','भ':'B','म':'M','य':'Y','र':'R','ल':'L','व':'V','श':'S','ष':'S','स':'S','ह':'H'
+    };
+
+    function tokenizeTextToSigns(rawText) {
+      const cleaned = rawText.trim().toLowerCase().replace(/[.,!?;:।]/g, ' ').replace(/\s+/g, ' ');
+      if (!cleaned) return [];
+
+      // Build sorted list of all keywords (longest phrases first for greedy matching)
+      const phraseMap = [];
+      for (const sign of SIGNS_DB) {
+        for (const kw of sign.keywords) {
+          phraseMap.push({ kw: kw.toLowerCase(), sign });
+        }
+      }
+      phraseMap.sort((a, b) => b.kw.length - a.kw.length);
+
+      const tokens = [];
+      let remaining = cleaned;
+
+      while (remaining.length > 0) {
+        remaining = remaining.trimStart();
+        if (!remaining) break;
+
+        let matched = false;
+        for (const entry of phraseMap) {
+          if (remaining === entry.kw || remaining.startsWith(entry.kw + ' ')) {
+            tokens.push({
+              type: 'sign',
+              label: entry.sign.en,
+              subLabel: entry.sign.hi,
+              pose: entry.sign.pose,
+              motion: entry.sign.motion,
+              tip: state.lang === 'hi' ? entry.sign.poseHi : entry.sign.poseEn,
+              category: entry.sign.category
+            });
+            remaining = remaining.slice(entry.kw.length);
+            matched = true;
+            break;
+          }
+        }
+
+        if (!matched) {
+          // Extract next single word and fingerspell it letter-by-letter
+          const spaceIdx = remaining.indexOf(' ');
+          const word = spaceIdx === -1 ? remaining : remaining.slice(0, spaceIdx);
+          remaining = spaceIdx === -1 ? '' : remaining.slice(spaceIdx + 1);
+
+          // Skip ultra-common filler words if desired? Keep them fingerspelled so nothing is lost!
+          for (const ch of word) {
+            const upper = ch.toUpperCase();
+            let letter = null;
+            if (ASL_ALPHABET[upper]) {
+              letter = upper;
+            } else if (HI_TO_LATIN[ch]) {
+              letter = HI_TO_LATIN[ch];
+            }
+            if (letter && ASL_ALPHABET[letter]) {
+              tokens.push({
+                type: 'letter',
+                label: `Letter "${letter}"`,
+                subLabel: `Spelling: ${word.toUpperCase()}`,
+                pose: ASL_ALPHABET[letter],
+                motion: 'static',
+                tip: `ASL Fingerspelling — "${letter}" in "${word}"`,
+                letterChar: letter
+              });
+            }
+          }
+        }
+      }
+      return tokens;
+    }
+
+    function translateTextToSign() {
+      const input = document.getElementById('reverseInput').value;
+      const tokens = tokenizeTextToSigns(input);
+
+      if (tokens.length === 0) {
+        showToast(state.lang === 'hi' ? 'कृपया कोई शब्द या वाक्य लिखें' : 'Please enter or speak a phrase first', 'info');
+        return;
+      }
+
+      stopReversePlayback();
+      state.reverseTokens = tokens;
+      state.reverseIndex = 0;
+      renderReverseTimeline();
+      showReverseToken(0);
+      startReversePlayback();
+    }
+
+    function useSamplePhrase(phrase) {
+      document.getElementById('reverseInput').value = phrase;
+      translateTextToSign();
+    }
+
+    function renderReverseTimeline() {
+      const container = document.getElementById('signTimeline');
+      if (state.reverseTokens.length === 0) {
+        container.innerHTML = `<span class="text-xs text-slate-500 italic">${I18N[state.lang].emptyTimeline}</span>`;
+        return;
+      }
+
+      container.innerHTML = state.reverseTokens.map((tok, idx) => {
+        const active = idx === state.reverseIndex;
+        const isLetter = tok.type === 'letter';
+        const pillText = isLetter ? tok.letterChar : (state.lang === 'hi' ? tok.subLabel : tok.label);
+        return `
+          <button onclick="jumpToReverseToken(${idx})"
+            class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition border ${
+              active
+                ? 'bg-indigo-600 text-white border-indigo-400 scale-105 shadow-md shadow-indigo-500/40'
+                : isLetter
+                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+            }">
+            ${pillText}
+          </button>`;
+      }).join('');
+    }
+
+    function showReverseToken(index) {
+      if (state.reverseTokens.length === 0) return;
+      state.reverseIndex = Math.max(0, Math.min(index, state.reverseTokens.length - 1));
+      const tok = state.reverseTokens[state.reverseIndex];
+
+      document.getElementById('avatarStageSvg').innerHTML = renderHandSVG(tok.pose, tok.motion);
+      document.getElementById('avatarMainLabel').textContent = tok.label;
+      document.getElementById('avatarSubLabel').textContent = tok.subLabel;
+      document.getElementById('avatarPoseTip').textContent = tok.tip || '';
+      document.getElementById('stageStepCounter').textContent = `${state.reverseIndex + 1} / ${state.reverseTokens.length}`;
+
+      const badge = document.getElementById('stageModeBadge');
+      if (tok.type === 'letter') {
+        badge.textContent = 'ASL Fingerspelling';
+        badge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40';
+      } else {
+        badge.textContent = '30-Sign Phrase';
+        badge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+      }
+
+      renderReverseTimeline();
+    }
+
+    function jumpToReverseToken(idx) {
+      stopReversePlayback();
+      showReverseToken(idx);
+    }
+
+    function stepReverse(delta) {
+      if (state.reverseTokens.length === 0) return;
+      stopReversePlayback();
+      const next = (state.reverseIndex + delta + state.reverseTokens.length) % state.reverseTokens.length;
+      showReverseToken(next);
+    }
+
+    function startReversePlayback() {
+      if (state.reverseTokens.length === 0) return;
+      state.reversePlaying = true;
+      updatePlayPauseUI();
+
+      const scheduleNext = () => {
+        if (!state.reversePlaying) return;
+        const tok = state.reverseTokens[state.reverseIndex];
+        // Letters play faster than full phrase signs
+        const baseMs = tok.type === 'letter' ? 950 : 1750;
+        const delay = Math.round(baseMs / state.reverseSpeed);
+
+        state.reverseTimer = setTimeout(() => {
+          if (!state.reversePlaying) return;
+          if (state.reverseIndex < state.reverseTokens.length - 1) {
+            showReverseToken(state.reverseIndex + 1);
+            scheduleNext();
+          } else if (state.reverseLoop) {
+            showReverseToken(0);
+            scheduleNext();
+          } else {
+            stopReversePlayback();
+          }
+        }, delay);
+      };
+      scheduleNext();
+    }
+
+    function stopReversePlayback() {
+      state.reversePlaying = false;
+      clearTimeout(state.reverseTimer);
+      updatePlayPauseUI();
+    }
+
+    function toggleReversePlay() {
+      if (state.reverseTokens.length === 0) {
+        translateTextToSign();
+        return;
+      }
+      if (state.reversePlaying) {
+        stopReversePlayback();
+      } else {
+        if (state.reverseIndex >= state.reverseTokens.length - 1) {
+          showReverseToken(0);
+        }
+        startReversePlayback();
+      }
+    }
+
+    function updatePlayPauseUI() {
+      const btn = document.getElementById('playPauseBtn');
+      if (state.reversePlaying) {
+        btn.innerHTML = `⏸ <span>${I18N[state.lang].pauseBtn}</span>`;
+      } else {
+        btn.innerHTML = `▶ <span>${I18N[state.lang].playBtn}</span>`;
+      }
+    }
+
+    function toggleReverseLoop() {
+      state.reverseLoop = !state.reverseLoop;
+      const btn = document.getElementById('loopBtn');
+      if (state.reverseLoop) {
+        btn.className = 'px-3 py-2.5 rounded-lg bg-indigo-600/30 text-indigo-200 text-xs font-bold border border-indigo-500 transition';
+      } else {
+        btn.className = 'px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold border border-slate-700 transition';
+      }
+    }
+
+    function updatePlaybackSpeed(val) {
+      state.reverseSpeed = parseFloat(val);
+      document.getElementById('speedValue').textContent = `${state.reverseSpeed.toFixed(2).replace(/\.00$/, '.0')}x`;
+    }
+
+    // Web Speech API: Speech-to-Text (Microphone)
+    function toggleSpeechRecognition() {
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRec) {
+        showToast(state.lang === 'hi'
+          ? 'इस ब्राउज़र में माइक स्पीच रिकग्निशन समर्थित नहीं है (Chrome/Edge उपयोग करें)'
+          : 'Speech Recognition not supported in this browser. Try Chrome or Edge.', 'warn');
+        return;
+      }
+
+      if (state.isListening && state.recognition) {
+        state.recognition.stop();
+        return;
+      }
+
+      try {
+        const recognition = new SpeechRec();
+        recognition.lang = state.lang === 'hi' ? 'hi-IN' : 'en-US';
+        recognition.interimResults = true;
+        recognition.continuous = false;
+
+        recognition.onstart = () => {
+          state.isListening = true;
+          updateMicUI(true);
+        };
+
+        recognition.onresult = (event) => {
+          let finalStr = '';
+          for (let i = 0; i < event.results.length; i++) {
+            finalStr += event.results[i][0].transcript;
+          }
+          document.getElementById('reverseInput').value = finalStr;
+        };
+
+        recognition.onerror = (event) => {
+          console.error('Speech recognition error:', event.error);
+          showToast(`Mic error: ${event.error}`, 'warn');
+          state.isListening = false;
+          updateMicUI(false);
+        };
+
+        recognition.onend = () => {
+          state.isListening = false;
+          updateMicUI(false);
+          if (document.getElementById('reverseInput').value.trim()) {
+            translateTextToSign();
+          }
+        };
+
+        state.recognition = recognition;
+        recognition.start();
+      } catch (err) {
+        showToast('Could not start microphone.', 'warn');
+        state.isListening = false;
+        updateMicUI(false);
+      }
+    }
+
+    function updateMicUI(listening) {
+      const btn = document.getElementById('micBtn');
+      const txt = document.getElementById('micBtnText');
+      if (listening) {
+        btn.className = 'relative flex-1 py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 border border-red-400 text-white font-bold text-sm transition flex items-center justify-center gap-2 sos-pulse';
+        txt.textContent = I18N[state.lang].stopMicBtn;
+      } else {
+        btn.className = 'relative flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold text-sm transition flex items-center justify-center gap-2';
+        txt.textContent = I18N[state.lang].startMicBtn;
+      }
+    }
+
+    /*************************************************************************
+     * 11. TAB 3: 30-SIGN VISUAL DICTIONARY & PRACTICE GUIDE
+     *************************************************************************/
+    function setDictFilter(cat) {
+      state.dictFilter = cat;
+      document.querySelectorAll('.dict-filter-btn').forEach(btn => {
+        const active = btn.dataset.filter === cat;
+        btn.className = active
+          ? 'dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-indigo-600 text-white'
+          : 'dict-filter-btn px-3.5 py-2 rounded-xl text-xs font-bold transition bg-slate-800 text-slate-300 hover:bg-slate-700';
+      });
+      renderDictionary();
+    }
+
+    function renderDictionary() {
+      const query = (document.getElementById('dictSearch').value || '').trim().toLowerCase();
+      const grid = document.getElementById('dictionaryGrid');
+
+      const filtered = SIGNS_DB.filter(sign => {
+        const matchesCat = state.dictFilter === 'all' || sign.category === state.dictFilter;
+        const matchesQuery = !query ||
+          sign.en.toLowerCase().includes(query) ||
+          sign.hi.toLowerCase().includes(query) ||
+          sign.keywords.some(k => k.toLowerCase().includes(query));
+        return matchesCat && matchesQuery;
+      });
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `
+          <div class="col-span-full text-center py-12 text-slate-400 text-sm">
+            No matching signs found for "${query}".
+          </div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map((sign, i) => {
+        const isEmg = sign.category === 'emergency';
+        const catColor = isEmg
+          ? 'bg-red-500/15 text-red-300 border-red-500/30'
+          : sign.category === 'daily'
+            ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+            : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+        const poseTip = state.lang === 'hi' ? sign.poseHi : sign.poseEn;
+
+        return `
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 hover:border-indigo-500/50 p-4 flex flex-col justify-between gap-3 transition shadow-lg">
+            <div class="flex items-start gap-3.5">
+              <div class="h-20 w-20 shrink-0 rounded-xl bg-slate-950 border border-slate-800 p-1.5 flex items-center justify-center">
+                ${renderHandSVG(sign.pose, 'static')}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-1 mb-1">
+                  <span class="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${catColor}">
+                    ${sign.category}
+                  </span>
+                  <span class="text-[11px] font-bold text-slate-500">#${SIGNS_DB.indexOf(sign) + 1}</span>
+                </div>
+                <h3 class="text-sm sm:text-base font-extrabold text-white leading-snug">${sign.en}</h3>
+                <p class="text-xs sm:text-sm font-medium text-indigo-300">${sign.hi}</p>
+              </div>
+            </div>
+
+            <p class="text-xs text-slate-400 bg-slate-950/70 rounded-xl p-2.5 border border-slate-800/80 leading-relaxed">
+              <span class="font-bold text-slate-300">✋ Pose:</span> ${poseTip}
+            </p>
+
+            <div class="grid grid-cols-2 gap-2 pt-1">
+              <button onclick="playSignFromDict('${sign.id}')" class="py-2 px-3 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/35 text-indigo-200 border border-indigo-500/30 text-xs font-bold transition">
+                ▶ Animate
+              </button>
+              <button onclick="speakSignFromDict('${sign.id}')" class="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition">
+                🔊 Speak
+              </button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function playSignFromDict(id) {
+      const sign = SIGNS_DB.find(s => s.id === id);
+      if (!sign) return;
+      switchTab('reverse');
+      document.getElementById('reverseInput').value = state.lang === 'hi' ? sign.hi : sign.en;
+      translateTextToSign();
+    }
+
+    function speakSignFromDict(id) {
+      const sign = SIGNS_DB.find(s => s.id === id);
+      if (!sign) return;
+      if (!state.voiceEnabled) {
+        showToast(state.lang === 'hi' ? 'कृपया ऊपर से वॉइस ON करें' : 'Turn Voice ON in the header to hear audio', 'warn');
+        return;
+      }
+      speakText(state.lang === 'hi' ? sign.hi : sign.en);
+    }
+
+    /*************************************************************************
+     * 12. NAVIGATION, LANGUAGE SWITCHING & TOASTS
+     *************************************************************************/
+    function switchTab(tab) {
+      state.activeTab = tab;
+      const panels = {
+        camera: document.getElementById('panelCamera'),
+        reverse: document.getElementById('panelReverse'),
+        dictionary: document.getElementById('panelDictionary')
+      };
+      const btns = {
+        camera: document.getElementById('tabBtnCamera'),
+        reverse: document.getElementById('tabBtnReverse'),
+        dictionary: document.getElementById('tabBtnDict')
+      };
+
+      for (const key of Object.keys(panels)) {
+        const isActive = key === tab;
+        panels[key].classList.toggle('hidden', !isActive);
+        btns[key].setAttribute('aria-selected', isActive ? 'true' : 'false');
+        btns[key].className = isActive
+          ? 'flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+          : 'flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition text-slate-400 hover:text-white hover:bg-slate-800/80';
+      }
+    }
+
+    function setLanguage(lang) {
+      state.lang = lang;
+      document.getElementById('langEnBtn').className = lang === 'en'
+        ? 'px-2.5 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white shadow'
+        : 'px-2.5 py-1.5 rounded-lg text-xs font-bold transition text-slate-300 hover:text-white';
+      document.getElementById('langHiBtn').className = lang === 'hi'
+        ? 'px-2.5 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white shadow'
+        : 'px-2.5 py-1.5 rounded-lg text-xs font-bold transition text-slate-300 hover:text-white';
+
+      document.getElementById('speechLangTag').textContent = lang === 'hi' ? 'hi-IN' : 'en-US';
+
+      // Update all data-i18n elements
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (I18N[lang][key]) el.textContent = I18N[lang][key];
+      });
+
+      renderSimulateBar();
+      renderTranscript();
+      renderDictionary();
+      renderReverseTimeline();
+      updatePlayPauseUI();
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const colors = {
+        success: 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200',
+        warn: 'bg-amber-950/95 border-amber-500/50 text-amber-200',
+        info: 'bg-slate-900/95 border-indigo-500/50 text-indigo-100'
+      };
+      const toast = document.createElement('div');
+      toast.className = `pointer-events-auto px-4 py-3 rounded-xl border text-xs sm:text-sm font-semibold shadow-2xl backdrop-blur-md transition-all duration-300 ${colors[type] || colors.info}`;
+      toast.textContent = message;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(8px)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3200);
+    }
+
+    /*************************************************************************
+     * 13. INITIALIZATION ON PAGE LOAD
+     *************************************************************************/
+    window.addEventListener('DOMContentLoaded', () => {
+      renderSimulateBar();
+      renderDictionary();
+      // Render initial friendly wave hand in Reverse Stage
+      document.getElementById('avatarStageSvg').innerHTML = renderHandSVG(SIGNS_DB[6].pose, 'wave');
+      // Pre-warm speech synthesis voices
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.getVoices();
+      }
+    });
+  </script>
+</body>
+</html>
